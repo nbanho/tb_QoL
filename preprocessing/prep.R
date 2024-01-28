@@ -58,7 +58,7 @@ df_prep <- df %>%
          site = tools::toTitleCase(site),
          site = ifelse(site == "Mosambiqu", "Mosambique", site),
          site = ifelse(site == "Southafrica", "South Africa", site),
-         sex = ifelse(sex == 1, 0, 1), # 1 is male
+         sex = ifelse(sex == 1, 0, 1), # coded such that 1 is now female and 0 is male
          hiv_test_result = ifelse(hiv_test_result == 99, NA, ifelse(hiv_test_result == 1, 1, 0)),
          drug_resistant = ifelse(mb_xpert_t1_rifresist == 1, 1, ifelse(mb_drug_rif == 2, 1, 0)), # define drug resistance
          drug_resistant = ifelse(is.na(drug_resistant), 0, drug_resistant),

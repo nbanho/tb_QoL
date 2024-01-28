@@ -11,20 +11,24 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Libraries
 
-```{r}
+Loading packages...
+
+```{r, include=FALSE}
 library(tidyverse)
 library(reshape2)
 library(rstanarm)
 library(rstan)
 library(tidybayes)
-source("../utils/plotting.R")
-source("../utils/summaries.r")
+source("utils/plotting.R")
+source("utils/summaries.r")
 ```
 
 
 ## Data
 
-```{r}
+Loading data...
+
+```{r, include=FALSE}
 # data of patients with at least one outcome 
 QoL <- readRDS("../data-clean/phys-ment-data.rds")
 QoL_start <- filter(QoL, time == "Start treatment")
@@ -36,38 +40,54 @@ outcome_cont <- c("PHQ9-S", "QoL-MCS", "QoL-PCS", "6MWT-D", "STST-R")
 names(outcome_cont) <- c("phq9_score", "sf12_ment", "sf12_phys", "smwt_dist", "stst_nr")
 outcome_bin <- c("PHQ9-S<10", "QoL-MCS<42", "QoL-PCS<50", "6MWT-D<400m", "STST-R<20")
 names(outcome_bin) <- c("phq9_score_bin", "sf12_ment_bin", "sf12_phys_bin", "smwt_dist_bin", "stst_nr_bin")
+predictor <- c("Age", "Female", "Clinically diagnosed", "HIV+", "High bacterial load", "MDR", "Cavitation", "Opacity")
+names(predictor) <- c("age", "sex", "clindiag", "hiv_test_result", "highbact", "drug_resistant", "cavity", "opacity")
 ```
+
+* We analyze all patients with complete data, i.e. data recorded at treatment start & end and post treatment.
+* Thereby, we also include patients that are lost to follow-up, i.e. no recorded data in 8 months since last visit.
+* Outcomes for those lost to follow-up are treated as NA (not available).
+* There may be further NAs for single outcomes, i.e. some endpoints not recorded / measured.
 
 ## Descriptives
 
 ### Study population
 
-```{r}
+```{r, echo=F, warning=FALSE, message=FALSE}
+print(sprintf("Total: %i patients with %i observations.", nrow(QoL) / 3, nrow(QoL)))
+```
+
+```{r, echo=F, warning=FALSE, message=FALSE}
 # no ltfu
 QoL %>%
   group_by(time) %>%
-  summarize(ltfu = sum(ltfu, na.rm = T)) %>%
+  summarize(p = sum(ltfu, na.rm = T) / n()) %>%
   ungroup() %>%
-  ggplot(aes(x = time, y = ltfu)) +
-  geom_bar(stat = "identity")
+  ggplot(aes(x = time, y = p)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Proportion of patients (%)",
+       title = "Patients lost to follow-up (LTFU) over time",
+       subtitle = "LTFU if >8months since last visit and no outcomes recorded") +
+  theme_custom() +
+  theme(axis.title.x = element_blank())
+```
 
-# no missing characteristcs
-QoL_start %>%
-  dplyr::select(age, sex, hiv_test_result, drug_resistant, clindiag, cavity, opacity, highbact) %>%
-  gather() %>%
-  group_by(key) %>%
-  summarize(n_na = sum(is.na(value))) %>%
-  ungroup() %>%
-  ggplot(aes(x = key, y = n_na)) +
-  geom_bar(stat = "identity")
-
+```{r, echo=F, warning=FALSE, message=FALSE}
 # patient characteristics
 QoL_start %>%
   dplyr::select(age, sex, hiv_test_result, drug_resistant, clindiag, cavity, opacity, highbact) %>%
   gather() %>%
+  mutate(key = recode(key, !!! predictor),
+         key = factor(key, levels = predictor)) %>%
   group_by(key) %>%
-  summarize_all(~ ifelse(max(.x, na.rm = T) > 1, median_iqr(.x), count_per.bin(.x)))
+  summarize_all(~ ifelse(max(.x, na.rm = T) > 1, median_iqr(.x), count_per.bin(.x))) %>%
+  ungroup() %>%
+  arrange(key) %>%
+  set_names(c("Variable", "Median (IQR) or N (%)"))
+```
 
+```{r, echo=F, warning=FALSE, message=FALSE}
 # sites
 count_per.cat(QoL_start$site)
 ```
@@ -76,14 +96,17 @@ count_per.cat(QoL_start$site)
 
 #### Summary
 
-```{r}
+```{r, echo = F, warning=FALSE, message=FALSE}
 # start of treatment
 QoL_start %>%
   dplyr::select(sf12_phys, sf12_ment, phq9_score, smwt_dist, stst_nr) %>%
   gather() %>%
   group_by(key) %>%
   summarize(median_and_iqr = median_iqr(value)) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(key = recode(key, !!! outcome_cont)) %>%
+  arrange(key) %>%
+  set_names(c("Outcome", "Median (IQR) at treatment start"))
 
 # end of treatment
 QoL_end %>%
@@ -91,7 +114,10 @@ QoL_end %>%
   gather() %>%
   group_by(key) %>%
   summarize(median_and_iqr = median_iqr(value)) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(key = recode(key, !!! outcome_cont)) %>%
+  arrange(key) %>%
+  set_names(c("Outcome", "Median (IQR) at treatment end"))
   
 # post treatment
 QoL_post %>%
@@ -99,308 +125,404 @@ QoL_post %>%
   gather() %>%
   group_by(key) %>%
   summarize(median_and_iqr = median_iqr(value)) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(key = recode(key, !!! outcome_cont)) %>%
+  arrange(key) %>%
+  set_names(c("Outcome", "Median (IQR) post treatment"))
 ```
 
-#### Comparison
+#### Treatment comparison
 
-```{r}
-# comparison
-QoL_cc_comp <- QoL_cc %>%
+```{r, echo = F, warning=FALSE, message=FALSE}
+# comparison continuous data excluding NAs
+QoL %>%
+  dplyr::select(time, sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score) %>%
+  melt("time") %>%
+  rename(outcome = variable) %>%
+  mutate(outcome = recode(outcome, !!! outcome_cont)) %>%
+  ggplot(aes(x = value, fill = time)) +
+  facet_wrap(~ outcome, scales = "free") +
+  geom_density(alpha = .5) +
+  coord_cartesian(expand = F) +
+  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  labs(title = "Physical and mental health scores through treatment",
+       subtitle = "Health score distribution at treatment start & end and post treatment",
+       y = "Density") +
+  theme_custom() +
+  theme(legend.position = c(.85, .25),
+        legend.direction = "vertical",
+        legend.title = element_blank(),
+        axis.title.x = element_blank())
+```
+
+```{r, echo = F, warning=FALSE, message=FALSE}
+# comparison binary data
+QoL_bin_comp <- QoL %>%
   dplyr::select(time, ltfu, sf12_phys_bin, sf12_ment_bin, smwt_dist_bin, stst_nr_bin, phq9_score_bin) %>%
-  melt("time", "ltfu")  %>%
+  melt(c("time", "ltfu"))  %>%
   group_by(time, variable) %>%
   summarize(Yes = sum(value, na.rm = T),
             No = sum(value == 0, na.rm = T),
-            Unknown = sum(is.na(value))) %>%
+            Unrecorded = sum(is.na(value) & !ltfu, na.rm = T),
+            LTFU = sum(ltfu, na.rm = T)) %>%
   ungroup() %>%
   rename(outcome = variable) %>%
   melt(c("time", "outcome")) %>%
   mutate(outcome = recode(outcome, !!! outcome_bin),
          outcome = factor(outcome, levels = outcome_bin),
-         variable = factor(variable, levels = c("Unknown", "No", "Yes")))
-
-# Bayesian prob estimate changes
-QoL_cc_comp_yN <- QoL_cc_comp %>%
-  group_by(time, outcome) %>% 
-  summarize(N = sum(value), n = value[variable == "Yes"]) %>% 
+         variable = factor(variable, levels = c("LTFU", "Unrecorded", "No", "Yes"))) %>%
+  group_by(time, outcome) %>%
+  mutate(p = value / sum(value) * 100) %>%
   ungroup()
-p_val <- c()
-p = 0
-for (out in outcome_bin) {
-  p = p + 1
-  mod_comp <- stan_glm(cbind(N, N - n) ~ time, 
-                       data = filter(QoL_cc_comp_yN, outcome == out), 
-                       family = binomial(), seed = 12345)
-  post_prob <- spread_draws(mod_comp, `timeEnd of treatment`)
-  p_val[p] <- sum(post_prob$`timeEnd of treatment` < 0) / nrow(post_prob)
-}
-p_val_txt <- round(p_val * 100, 0)
-p_val_txt <- paste0("Prob.", ifelse(p_val_txt == 100, ">99", paste0("=",p_val_txt)) , "%")
-p_val_y_pos <- c(max(QoL_cc_comp_yN$n[QoL_cc_comp_yN$outcome==outcome_bin[1]]),
-                 max(QoL_cc_comp_yN$n[QoL_cc_comp_yN$outcome==outcome_bin[2]]), 
-                 max(QoL_cc_comp_yN$n[QoL_cc_comp_yN$outcome==outcome_bin[3]]), 
-                 max(QoL_cc_comp_yN$n[QoL_cc_comp_yN$outcome==outcome_bin[4]]),
-                 max(QoL_cc_comp_yN$n[QoL_cc_comp_yN$outcome==outcome_bin[5]])) + 50
 
-QoL_cc_comp_annon <- QoL_cc_comp %>%
-  filter(variable == "Yes")
-
-QoL_cc_comp_pl <- ggplot(data = QoL_cc_comp, mapping = aes(x = time, y = value)) +
+QoL_bin_comp_pl <- ggplot(data = QoL_bin_comp, mapping = aes(x = time, y = p)) +
   facet_wrap(~ outcome, nrow = 1) +
-  geom_bar(mapping = aes(alpha = variable, fill = time), stat = "identity") +
-  geom_text(data = QoL_cc_comp_annon, mapping = aes(group = time, label = paste0("N=", round(value))), vjust = -.5, size = 8 / cm(1), show.legend = F) +
-  ggsignif::geom_signif(y_position = p_val_y_pos[1], annotation = p_val[1], xmin = .75, xmax = 2.25, 
-                        textsize = 8 / cm(1)) +
-  scale_y_continuous(expand = expansion(mult = c(0,0.1))) +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
-  scale_color_manual(values = wes_palette("Moonrise2")) +
-  scale_x_discrete(labels = c("Start", "End")) +
+  geom_bar(mapping = aes(alpha = variable, fill = variable), stat = "identity") +
+  geom_text(data = filter(QoL_bin_comp, variable == "Yes"), 
+            mapping = aes(group = time, label = paste0(round(p), "%")), 
+            vjust = -.5, size = 8 / cm(1), color = wes_palette("AsteroidCity2")[1], show.legend = F) +
+  scale_fill_manual(values = wes_palette("AsteroidCity2"), breaks = c("Yes", "No", "Unrecorded", "LTFU")) +
+  scale_x_discrete(labels = c("Start", "End", "Post")) +
+  scale_y_continuous(expand = c(0,0)) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
-  scale_alpha_discrete(breaks = c("Yes", "No", "Unknown")) +
-  labs(y = "Proportion of participants (%)", x = "Treatment") +
+  scale_alpha_discrete(range = c(.4, 1), breaks = c("Yes", "No", "Unrecorded", "LTFU")) +
+  labs(y = "Proportion of patients (%)", x = "Treatment", fill = "a", alpha = "a",
+       title = "Physical and mental health conditions through treatment",
+       subtitle = "Proportion of patients with health conditions at treatment start & end and post treatment") +
   theme_custom() +
   theme(legend.position = "bottom") +
-  guides(fill = "none",
+  guides(fill = guide_legend(title = element_blank()),
          alpha = guide_legend(title = element_blank()))
 
-QoL_cc_comp_pl_dissem <- ggplot_build(QoL_cc_comp_pl)
-QoL_cc_comp_pl_dissem$data[[3]]$annotation <- rep(p_val_txt, each = 3)
-tick_size <- QoL_cc_comp_pl_dissem$data[[3]]$yend[1] - QoL_cc_comp_pl_dissem$data[[3]]$y[1]
-QoL_cc_comp_pl_dissem$data[[3]]$yend <- rep(p_val_y_pos, each = 3) - rep(c(0, 0, tick_size), times = 5)
-QoL_cc_comp_pl_dissem$data[[3]]$y <- rep(p_val_y_pos, each = 3) - rep(c(tick_size, 0, 0), times = 5)
-QoL_cc_comp_pl_wAnnon <- ggplot_gtable(QoL_cc_comp_pl_dissem)
-
-pdf(file = "../results/score-treatment-comparison.pdf", width = 16 / cm(1), h = 10 / cm(1))
-grid::grid.draw(QoL_cc_comp_pl_wAnnon)
-dev.off()
+save_plot(QoL_bin_comp_pl, pdf_file = "../results/score-treatment-comparison.pdf", w = 16, h = 10)
 ```
 
 #### Changes
 
-```{r}
-QoL_cc_changes <- QoL_cc %>%
+```{r, echo = F, warning=FALSE, message=FALSE}
+QoL_changes <- QoL %>%
   dplyr::select(record_id, time, sf12_phys_bin, sf12_ment_bin, smwt_dist_bin, stst_nr_bin, phq9_score_bin) %>%
   melt(c("record_id", "time")) %>%
   dcast(record_id + variable ~ time) %>%
-  mutate(change = `End of treatment` - `Start of treatment`)
+  mutate(change_end = `End treatment` - `Start treatment`,
+         change_post = `Post treatment` - `End treatment`) %>%
+  dplyr::select(record_id, variable, change_end, change_post) %>%
+  rename(outcome = variable) %>%
+  melt(c("record_id", "outcome")) %>%
+  mutate(variable = ifelse(variable == "change_end", "End vs Start", "Post vs End"),
+         value = ifelse(is.na(value), "Unknown", ifelse(value == -1, "Improved", ifelse(value == 0, "Unchanged", "Worsened"))),
+         value = factor(value, levels = c("Unknown", "Worsened", "Unchanged", "Improved")),
+         outcome = recode(gsub("_bin", "", outcome), !!! outcome_cont),
+         outcome = factor(outcome, levels = outcome_cont)) 
 
-QoL_cc_changes %>%
-  group_by(variable, change) %>%
+QoL_changes_sum <- QoL_changes %>%
+  group_by(outcome, variable, value) %>%
   summarize(n = n()) %>%
-  ggplot(aes(x = variable, y = n, fill = factor(change))) +
-  geom_bar(stat = "identity", position = "stack")
-
-QoL_cc_changes %>%
-  dplyr::filter(`Start of treatment` == 1) %>%
-  dplyr::select(record_id, variable, change) %>%
-  dcast(record_id ~ variable) %>%
-  dplyr::select(-record_id) %>%
-  cor(use = "complete.obs") %>%
-  corrplot::corrplot()
-```
-
-## Modeling
-
-```{r}
-# create stan data
-stanDF <- QoL_cc_changes %>%
-  dplyr::filter(!is.na(change)) %>%
-  mutate(change_type = ifelse(change == -1, "Worsened", ifelse(change == 0, "Unchanged", "Improved")),
-         # change_type = ifelse(`Start of treatment` == 0, ifelse(change == 1, "improved", "remained good"),
-         #                      ifelse(change == -1, "worsened", "remained bad")),  
-         var_change_type = paste(variable, change_type, sep = ": "),
-         var_change_type = factor(var_change_type, levels = unique(var_change_type)),
-         var_change_type_int = as.integer(var_change_type),
-         record_id = factor(record_id, levels = unique(record_id)),
-         record_id_int = as.integer(stanDF$record_id),
-         outcome = recode(gsub("_bin", "", variable), !!! outcome_cont),
-         outcome = factor(outcome, levels = outcome_cont),
-         change_type = factor(change_type, levels = c("Worsened", "Unchanged", "Improved"))
-         # change_type = factor(change_type, levels = c("worsened", "remained bad", "remained good", "improved"))
-         )
-
-stanList <- list()
-stanList$K <- 4
-stanList$V <- n_distinct(stanDF$var_change_type)
-stanList$M <- n_distinct(stanDF$record_id)
-stanList$N <- nrow(stanDF)
-stanList$w <- stanDF$var_change_type_int
-stanList$doc <- stanDF$record_id_int
-stanList$alpha <- c(1,1,1, 1)
-stanList$beta <- rep(1, stanList$V)
-
-# model
-lda <- stan(file = "../models/lda-clustering.stan", data = stanList, seed = 12345, cores = 2)
-
-# cluster distr
-cluster_distr <- spread_draws(lda, phi[k,v]) %>%
-  left_join(stanDF %>% 
-              rename(v = var_change_type_int) %>%
-              group_by(var_change_type) %>%
-              slice(1) %>%
-              ungroup() %>%
-              dplyr::select(v, outcome, change_type),
-            by = "v")
-
-
-cluster_distr %>%
-  group_by(k, outcome, change_type) %>%
-  summarize(phi = mean(phi)) %>%
   ungroup() %>%
-  ggplot(aes(x = change_type, y = phi, fill = change_type)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 1)) +
-  scale_fill_brewer(palette = "PiYG") +
-  #scale_fill_manual(values = c("red", "blue")) +
-  facet_grid(outcome ~ k) +
-  theme_custom() 
+  group_by(outcome, variable) %>%
+  mutate(p = 100 * n / sum(n)) %>%
+  ungroup()
 
-  
-# create change data
-df_cc_change <- df_cc %>%
-  mutate(phq9_score = 27 - phq9_score) %>% # recode PHQ9 Score to facilitate computation of the log changes
-  group_by(record_id) %>%
-  summarise(
-    across(c(site, age, sex, hiv_test_result, drug_resistant, clindiag, cavity, opacity, highbact), ~ .x[1]),
-    across(c(sf12_phys, sf12_ment, smwt_dist, phq9_score), ~ log(.x[2] / .x[1])),
-  ) %>%
-  mutate(
-    age = ifelse(age < 25, "24y", "25y"),
-    age = factor(age, levels = c("25y", "24y")),
-    across(c(drug_resistant, clindiag, cavity, opacity, highbact), ~ ifelse(.x == 1, "Yes", "No")),
-    across(c(drug_resistant, clindiag, cavity, opacity, highbact), ~ factor(.x, levels = c("No", "Yes"))),
-    sex = ifelse(sex == 1, "Male", "Female"),
-    sex = factor(sex, levels = c("Male", "Female")),
-    site = factor(site, levels = c("Malawi", "Mosambique", "Zimbabwe", "South Africa", "Zambia")),
-    hiv_test_result = ifelse(hiv_test_result == 1, "Positive", "Negative"),
-    hiv_test_result = factor(hiv_test_result, c("Negative", "Positive"))
-  )
-```
-
-
-
-
-### Model change in outcome
-
-```{r}
-# models
-mod_sf12phys_out <- stan_glm(sf12_phys ~ 1, data = df_cc_change, prior = NULL)
-mod_sf12phys_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`)
-mod_sf12ment_out <- stan_glm(sf12_ment ~ 1, data = df_cc_change, prior = NULL)
-mod_sf12ment_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`)
-mod_phq9s_out <- stan_glm(phq9_score ~ 1, data = df_cc_change, prior = NULL)
-mod_phq9s_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`)
-mod_smwtd_out <- stan_glm(smwt_dist ~ 1, data = df_cc_change, prior = NULL)
-mod_smwtd_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`)
-
-draws_occ <- rbind(spread_draws(mod_sf12phys_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "QoL-PCS"),
-                   spread_draws(mod_sf12ment_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "QoL-MCS"),
-                   spread_draws(mod_phq9s_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "PHQ9-S"),
-                   spread_draws(mod_smwtd_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "6MWT-D")) %>%
-  mutate(variable = factor(variable, levels = c("QoL-MCS", "QoL-PCS", "6MWT-D", "PHQ9-S")),
-         value = ifelse(variable == "PHQ9-S", (-1) * value, value))
-
-sample_sizes <- data.frame(variable = c("QoL-MCS", "QoL-PCS", "6MWT-D", "PHQ9-S"),
-                           value = .6,
-                           label = sapply(dplyr::select(df_cc_change, sf12_phys, sf12_ment, phq9_score, smwt_dist), function(x) nrow(df_cc_change) - sum(is.na(x)))) %>%
-  mutate(label = paste0("N=", label))
-
-# plot
-plot_a <- draws_occ %>%
-  ggplot(aes(x = variable, y = value)) +
-  stat_eye(mapping = aes(fill = variable), shape = 23, size = 1, .width = c(.95)) +
-  #geom_violin(mapping = aes(fill = variable), draw_quantiles = c(0.05, 0.25, 0.5, 0.75, 0.95)) +
-  #geom_boxplot(width = 0.15, outlier.shape = NA) +
-  #geom_text(data = sample_sizes, mapping = aes(label = label), size = 8 / cm(1), vjust = -1.5) +
-  geom_hline(aes(yintercept = 0), linetype = "dotted", color = "red") +
-  scale_fill_manual(values = wes_palette("Darjeeling2")) +
-  scale_y_continuous(labels = scales::percent_format(suffix = ""), limits = c(NA, NA), breaks = seq(-1, 1, .25), expand = expansion(add = c(0, .01))) +
-  coord_flip() +
-  labs(title = "A: Estimated change in\nhealth scores.",
-       y = "Estimated change (%)") +
+QoL_changes_sum_pl <- ggplot(data = QoL_changes_sum, mapping = aes(x = outcome, y = p, fill = value)) +
+  facet_wrap(~ variable, nrow = 1) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(data = filter(QoL_changes_sum, value == "Improved"), 
+            mapping = aes(group = value, label = paste0(round(p), "%")), 
+            vjust = -.5, size = 8 / cm(1), color = wes_palette("AsteroidCity2")[3], show.legend = F) +
+  scale_fill_manual(values = c(rev(wes_palette("AsteroidCity2")[1:3]), "grey") , breaks = c("Improved", "Unchanged", "Worsened", "Unknown")) +
+  scale_y_continuous(expand = c(0,0)) +
+  coord_cartesian(ylim = c(0, NA), clip = "off") +
+  labs(y = "Proportion of patients (%)", x = "Treatment", fill = "a", alpha = "a",
+       title = "Changes in physical and mental health in TB patients",
+       subtitle = "Proportion of patients by changes between treatment end vs start and post treatment vs treatment end") +
   theme_custom() +
-  theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), 
-        legend.position = "top", legend.title = element_blank(),
-        plot.title = element_text(face = 1, size = 8),
-        legend.key.width = unit(.4, "cm"),
-        legend.key.height = unit(.2, "cm"),
-        panel.spacing = unit(1, "cm"),
-        strip.text.x = element_text(face = "bold")) 
+  theme(legend.position = "bottom") +
+  guides(fill = guide_legend(title = element_blank()),
+         alpha = guide_legend(title = element_blank()))
 
-plot_a
+QoL_changes_sum_pl
 ```
 
-### Association with baseline characteristics
+#### Sankey 
 
-```{r}
-# model
-mod_sf12ment <- stan_lmer(sf12_ment ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity, 
-                          data = df_cc_change, prior = NULL)
-mod_sf12phys <- stan_lmer(sf12_phys ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity, 
-                          data = df_cc_change, prior = NULL)
-mod_smwtd <- stan_lmer(smwt_dist ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity, 
-                       data = df_cc_change, prior = NULL)
-mod_phq9s <- stan_lmer(phq9_score ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity, 
-                       data = df_cc_change, prior = NULL)
+```{r, echo = F, warning=FALSE, message=FALSE}
+sankey_cats <- data.frame(outcome = outcome_cont,
+                          cutoff = c(10, 42, 50, 400, 20)) %>%
+  mutate(yes = paste(outcome, "smaller", cutoff),
+         no = paste(outcome, "bigger", cutoff),
+         ltfu = paste(outcome, "ltfu"),
+         unknown = paste(outcome, "unknown")) %>%
+  dplyr::select(yes, no, ltfu, unknown) %>%
+  gather() %>%
+  mutate(names = gsub("smaller \\d*", "yes", value),
+         names = gsub("bigger \\d*", "no", names),
+         value = gsub("smaller", "<", value),
+         value = gsub("bigger", ">", value)) 
+sankey_cats_vec <- sankey_cats$value
+names(sankey_cats_vec) <- sankey_cats$names
 
-# parameters
-draws_cc_assoc <- rbind(spread_draws(mod_sf12phys, `sexFemale`, `age24y`, `hiv_test_resultPositive`, 
-                                     cavityYes, clindiagYes) %>% mutate(outcome = "QoL-PCS"),
-                        spread_draws(mod_sf12ment, `sexFemale`, `age24y`, `hiv_test_resultPositive`, 
-                                     cavityYes, clindiagYes) %>% mutate(outcome = "QoL-MCS"),
-                        spread_draws(mod_phq9s, `sexFemale`, `age24y`, `hiv_test_resultPositive`, 
-                                     cavityYes, clindiagYes) %>% mutate(outcome = "PHQ9-S"),
-                        spread_draws(mod_smwtd, `sexFemale`, `age24y`, `hiv_test_resultPositive`, 
-                                     cavityYes, clindiagYes) %>% mutate(outcome = "6MWT-D")) %>%
-  rename(`Female` = `sexFemale`,
-         `Age<25y` = `age24y`,
-         `HIV+` = hiv_test_resultPositive,
-         `Cavitation` = `cavityYes`,
-         `Clin. diagn.` = `clindiagYes`) %>%
-  dplyr::select(-`.chain`,-`.iteration`,-`.draw`) %>%
-  melt("outcome") %>%
-  mutate(outcome = factor(outcome, levels = c("QoL-PCS", "QoL-MCS", "PHQ9-S", "6MWT-D")),
-         variable = factor(variable, levels = c("Age<25y", "Female", "HIV+", "Clin. diagn.", "Cavitation", "High bact. load"))) 
-
-# plot
-plot_b <- draws_cc_assoc %>%
-  group_by(variable, outcome) %>%
-  median_qi() %>%
+QoL_sankey <- QoL %>%
+  dplyr::select(time, ltfu, sf12_phys_bin, sf12_ment_bin, smwt_dist_bin, stst_nr_bin, phq9_score_bin) %>%
+  reshape2::melt(c("time", "ltfu")) %>%
+  rename(outcome = variable) %>%
+  mutate(outcome = recode(gsub("_bin", "", outcome), !!! outcome_cont),
+         outcome = factor(outcome, levels = outcome_cont),
+         value = ifelse(ltfu, "ltfu", ifelse(is.na(value), "unknown", ifelse(value == 1, "yes", "no")))) %>%
+  rename(category = value) %>%
+  group_by(time, outcome, category) %>%
+  summarize(value = n()) %>%
   ungroup() %>%
-  ggplot(aes(x = value, xmin = .lower, xmax = .upper, y = variable, color = outcome, group = outcome)) +
-  geom_errorbar(position = position_dodge(width = .75), width = .5, linewidth = .66) +
-  geom_pointrange(position = position_dodge(width = .75), shape = 23, fill = "white", linewidth = .66, size = .33) +
-  #stat_pointinterval(fill = "white", shape = 21, point_size = 2, position = position_dodge2(width = 10), .width = c(0.95)) +
-  geom_vline(aes(xintercept = 0), linetype = "dotted", color = "red") +
-  scale_color_manual(values = wes_palette("Darjeeling2")) +
-  labs(title = "B: Association of changes in health\nscores with baseline characteristics.",
-       x = "Estimated difference (pp)") +
-  scale_x_continuous(labels = scales::percent_format(suffix = ""), breaks = seq(-1, 1, .25)) +
-  theme_custom() + 
-  theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(),
-        legend.position = "none",
-        plot.title.position = "plot",
-        plot.title = element_text(face = 1, size = 8)) 
+  mutate(time_short = ifelse(time == "Start treatment", "treat. start", ifelse(time == "End treatment", "treat. end", "post treat.")),
+         variable = paste(outcome, category),
+         variable = recode(variable, !!! sankey_cats_vec),
+         variable = paste0(variable, " at ", time_short, " (N=", value, ")"))
+ 
+# A connection data frame is a list of flows with intensity for each flow
+links <- rbind(
+  QoL_sankey %>%
+    filter(time == "Start treatment") %>%
+    dplyr::select(outcome, variable) %>%
+    rename(source = variable) %>%
+    left_join(QoL_sankey %>%
+                filter(time == "End treatment") %>%
+                dplyr::select(outcome, value, variable) %>%
+                rename(target = variable),
+              by = "outcome"),
+  QoL_sankey %>%
+    filter(time == "End treatment") %>%
+    dplyr::select(outcome, variable) %>%
+    rename(source = variable) %>%
+    left_join(QoL_sankey %>%
+                filter(time == "Post treatment") %>%
+                dplyr::select(outcome, value, variable) %>%
+                rename(target = variable),
+              by = "outcome"))
+ 
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+  name=c(as.character(links$source), as.character(links$target)) %>% unique()
+)
+nodes$node_group <- stringi::stri_extract(nodes$name, regex = "\\w*-\\w*")
+ 
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+links$IDsource <- match(links$source, nodes$name)-1 
+links$IDtarget <- match(links$target, nodes$name)-1
+ 
+# Make the Network
+colors <- paste(wes_palette("FrenchDispatch"), collapse = '", "')
+colorJS <- paste('d3.scaleOrdinal(["', colors, '"])')
+sankey_pl <- sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", NodeGroup = "node_group",
+              colourScale = colorJS,
+              fontSize = 10,
+              sinksRight=FALSE)
 
-plot_b
-
-legend_grob <- ggplot() +
-  theme(
-    panel.background = element_rect(fill='transparent'), #transparent panel bg
-    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
-    panel.grid.major = element_blank(), #remove major gridlines
-    panel.grid.minor = element_blank(), #remove minor gridlines
-    legend.background = element_rect(fill='transparent'), #transparent legend bg
-    legend.box.background = element_rect(fill='transparent') #transparent legend panel
-  ) + cowplot::get_legend(plot_a) 
-plot_a_nL <- plot_a + theme(legend.position = "none")
-plot_b_nL <- plot_b + theme(legend.position = "none")
-plot_title <- grid::textGrob("Figure.", gp = grid::gpar(fontsize = 8, fontface = "bold"))
-plot_ab <- ((plot_a_nL + plot_spacer() + plot_b_nL) + ((plot_spacer() +  plot_spacer() + legend_grob))) + 
-  plot_annotation(title = "Figure.",
-                  caption = "Reference: male, <25y, HIV–, clinically undiagnosed, no cavitation.\nViolin plots: posterior distribution; medians: dots, lines: 95%-CIs. PP=percentage points. ",
-                  theme = theme_custom()) +
-  plot_layout(widths = c(1.25, .01, 1.05), heights = c(0.95, 0.05), nrow = 2) 
-#save_plot(plot_ab, pdf_file = "../results/croi-abstract-result-plot.pdf", w = 10.15, h = 10.15)
-save_plot(plot_ab, pdf_file = "../results/croi-abstract-result-plot.png", w = 10.15, h = 10.15)
+sankey_pl <- htmlwidgets::prependContent(sankey_pl, htmltools::tags$h1("Patient flow through treatment by health condition"))
+sankey_pl
 ```
+
+<!-- ## Modeling -->
+
+<!-- ```{r} -->
+<!-- # create stan data -->
+<!-- stanDF <- QoL_cc_changes %>% -->
+<!--   dplyr::filter(!is.na(change)) %>% -->
+<!--   mutate(change_type = ifelse(change == -1, "Worsened", ifelse(change == 0, "Unchanged", "Improved")), -->
+<!--          # change_type = ifelse(`Start of treatment` == 0, ifelse(change == 1, "improved", "remained good"), -->
+<!--          #                      ifelse(change == -1, "worsened", "remained bad")),   -->
+<!--          var_change_type = paste(variable, change_type, sep = ": "), -->
+<!--          var_change_type = factor(var_change_type, levels = unique(var_change_type)), -->
+<!--          var_change_type_int = as.integer(var_change_type), -->
+<!--          record_id = factor(record_id, levels = unique(record_id)), -->
+<!--          record_id_int = as.integer(stanDF$record_id), -->
+<!--          outcome = recode(gsub("_bin", "", variable), !!! outcome_cont), -->
+<!--          outcome = factor(outcome, levels = outcome_cont), -->
+<!--          change_type = factor(change_type, levels = c("Worsened", "Unchanged", "Improved")) -->
+<!--          # change_type = factor(change_type, levels = c("worsened", "remained bad", "remained good", "improved")) -->
+<!--          ) -->
+
+<!-- stanList <- list() -->
+<!-- stanList$K <- 4 -->
+<!-- stanList$V <- n_distinct(stanDF$var_change_type) -->
+<!-- stanList$M <- n_distinct(stanDF$record_id) -->
+<!-- stanList$N <- nrow(stanDF) -->
+<!-- stanList$w <- stanDF$var_change_type_int -->
+<!-- stanList$doc <- stanDF$record_id_int -->
+<!-- stanList$alpha <- c(1,1,1, 1) -->
+<!-- stanList$beta <- rep(1, stanList$V) -->
+
+<!-- # model -->
+<!-- lda <- stan(file = "../models/lda-clustering.stan", data = stanList, seed = 12345, cores = 2) -->
+
+<!-- # cluster distr -->
+<!-- cluster_distr <- spread_draws(lda, phi[k,v]) %>% -->
+<!--   left_join(stanDF %>%  -->
+<!--               rename(v = var_change_type_int) %>% -->
+<!--               group_by(var_change_type) %>% -->
+<!--               slice(1) %>% -->
+<!--               ungroup() %>% -->
+<!--               dplyr::select(v, outcome, change_type), -->
+<!--             by = "v") -->
+
+
+<!-- cluster_distr %>% -->
+<!--   group_by(k, outcome, change_type) %>% -->
+<!--   summarize(phi = mean(phi)) %>% -->
+<!--   ungroup() %>% -->
+<!--   ggplot(aes(x = change_type, y = phi, fill = change_type)) + -->
+<!--   geom_bar(stat = "identity", position = position_dodge(width = 1)) + -->
+<!--   scale_fill_brewer(palette = "PiYG") + -->
+<!--   #scale_fill_manual(values = c("red", "blue")) + -->
+<!--   facet_grid(outcome ~ k) + -->
+<!--   theme_custom()  -->
+
+
+<!-- # create change data -->
+<!-- df_cc_change <- df_cc %>% -->
+<!--   mutate(phq9_score = 27 - phq9_score) %>% # recode PHQ9 Score to facilitate computation of the log changes -->
+<!--   group_by(record_id) %>% -->
+<!--   summarise( -->
+<!--     across(c(site, age, sex, hiv_test_result, drug_resistant, clindiag, cavity, opacity, highbact), ~ .x[1]), -->
+<!--     across(c(sf12_phys, sf12_ment, smwt_dist, phq9_score), ~ log(.x[2] / .x[1])), -->
+<!--   ) %>% -->
+<!--   mutate( -->
+<!--     age = ifelse(age < 25, "24y", "25y"), -->
+<!--     age = factor(age, levels = c("25y", "24y")), -->
+<!--     across(c(drug_resistant, clindiag, cavity, opacity, highbact), ~ ifelse(.x == 1, "Yes", "No")), -->
+<!--     across(c(drug_resistant, clindiag, cavity, opacity, highbact), ~ factor(.x, levels = c("No", "Yes"))), -->
+<!--     sex = ifelse(sex == 1, "Male", "Female"), -->
+<!--     sex = factor(sex, levels = c("Male", "Female")), -->
+<!--     site = factor(site, levels = c("Malawi", "Mosambique", "Zimbabwe", "South Africa", "Zambia")), -->
+<!--     hiv_test_result = ifelse(hiv_test_result == 1, "Positive", "Negative"), -->
+<!--     hiv_test_result = factor(hiv_test_result, c("Negative", "Positive")) -->
+<!--   ) -->
+<!-- ``` -->
+
+
+
+
+<!-- ### Model change in outcome -->
+
+<!-- ```{r} -->
+<!-- # models -->
+<!-- mod_sf12phys_out <- stan_glm(sf12_phys ~ 1, data = df_cc_change, prior = NULL) -->
+<!-- mod_sf12phys_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`) -->
+<!-- mod_sf12ment_out <- stan_glm(sf12_ment ~ 1, data = df_cc_change, prior = NULL) -->
+<!-- mod_sf12ment_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`) -->
+<!-- mod_phq9s_out <- stan_glm(phq9_score ~ 1, data = df_cc_change, prior = NULL) -->
+<!-- mod_phq9s_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`) -->
+<!-- mod_smwtd_out <- stan_glm(smwt_dist ~ 1, data = df_cc_change, prior = NULL) -->
+<!-- mod_smwtd_out$stan_summary %>% data.frame() %>% mutate_all(function(x) round(x * 100, 0)) %>% dplyr::select(`X50.`, `X2.5.`, `X97.5.`) -->
+
+<!-- draws_occ <- rbind(spread_draws(mod_sf12phys_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "QoL-PCS"), -->
+<!--                    spread_draws(mod_sf12ment_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "QoL-MCS"), -->
+<!--                    spread_draws(mod_phq9s_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "PHQ9-S"), -->
+<!--                    spread_draws(mod_smwtd_out, `(Intercept)`) %>% rename(value = `(Intercept)`) %>% mutate(variable = "6MWT-D")) %>% -->
+<!--   mutate(variable = factor(variable, levels = c("QoL-MCS", "QoL-PCS", "6MWT-D", "PHQ9-S")), -->
+<!--          value = ifelse(variable == "PHQ9-S", (-1) * value, value)) -->
+
+<!-- sample_sizes <- data.frame(variable = c("QoL-MCS", "QoL-PCS", "6MWT-D", "PHQ9-S"), -->
+<!--                            value = .6, -->
+<!--                            label = sapply(dplyr::select(df_cc_change, sf12_phys, sf12_ment, phq9_score, smwt_dist), function(x) nrow(df_cc_change) - sum(is.na(x)))) %>% -->
+<!--   mutate(label = paste0("N=", label)) -->
+
+<!-- # plot -->
+<!-- plot_a <- draws_occ %>% -->
+<!--   ggplot(aes(x = variable, y = value)) + -->
+<!--   stat_eye(mapping = aes(fill = variable), shape = 23, size = 1, .width = c(.95)) + -->
+<!--   #geom_violin(mapping = aes(fill = variable), draw_quantiles = c(0.05, 0.25, 0.5, 0.75, 0.95)) + -->
+<!--   #geom_boxplot(width = 0.15, outlier.shape = NA) + -->
+<!--   #geom_text(data = sample_sizes, mapping = aes(label = label), size = 8 / cm(1), vjust = -1.5) + -->
+<!--   geom_hline(aes(yintercept = 0), linetype = "dotted", color = "red") + -->
+<!--   scale_fill_manual(values = wes_palette("Darjeeling2")) + -->
+<!--   scale_y_continuous(labels = scales::percent_format(suffix = ""), limits = c(NA, NA), breaks = seq(-1, 1, .25), expand = expansion(add = c(0, .01))) + -->
+<!--   coord_flip() + -->
+<!--   labs(title = "A: Estimated change in\nhealth scores.", -->
+<!--        y = "Estimated change (%)") + -->
+<!--   theme_custom() + -->
+<!--   theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(),  -->
+<!--         legend.position = "top", legend.title = element_blank(), -->
+<!--         plot.title = element_text(face = 1, size = 8), -->
+<!--         legend.key.width = unit(.4, "cm"), -->
+<!--         legend.key.height = unit(.2, "cm"), -->
+<!--         panel.spacing = unit(1, "cm"), -->
+<!--         strip.text.x = element_text(face = "bold"))  -->
+
+<!-- plot_a -->
+<!-- ``` -->
+
+<!-- ### Association with baseline characteristics -->
+
+<!-- ```{r} -->
+<!-- # model -->
+<!-- mod_sf12ment <- stan_lmer(sf12_ment ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity,  -->
+<!--                           data = df_cc_change, prior = NULL) -->
+<!-- mod_sf12phys <- stan_lmer(sf12_phys ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity,  -->
+<!--                           data = df_cc_change, prior = NULL) -->
+<!-- mod_smwtd <- stan_lmer(smwt_dist ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity,  -->
+<!--                        data = df_cc_change, prior = NULL) -->
+<!-- mod_phq9s <- stan_lmer(phq9_score ~ (1 | site) + age + sex + hiv_test_result + clindiag + cavity,  -->
+<!--                        data = df_cc_change, prior = NULL) -->
+
+<!-- # parameters -->
+<!-- draws_cc_assoc <- rbind(spread_draws(mod_sf12phys, `sexFemale`, `age24y`, `hiv_test_resultPositive`,  -->
+<!--                                      cavityYes, clindiagYes) %>% mutate(outcome = "QoL-PCS"), -->
+<!--                         spread_draws(mod_sf12ment, `sexFemale`, `age24y`, `hiv_test_resultPositive`,  -->
+<!--                                      cavityYes, clindiagYes) %>% mutate(outcome = "QoL-MCS"), -->
+<!--                         spread_draws(mod_phq9s, `sexFemale`, `age24y`, `hiv_test_resultPositive`,  -->
+<!--                                      cavityYes, clindiagYes) %>% mutate(outcome = "PHQ9-S"), -->
+<!--                         spread_draws(mod_smwtd, `sexFemale`, `age24y`, `hiv_test_resultPositive`,  -->
+<!--                                      cavityYes, clindiagYes) %>% mutate(outcome = "6MWT-D")) %>% -->
+<!--   rename(`Female` = `sexFemale`, -->
+<!--          `Age<25y` = `age24y`, -->
+<!--          `HIV+` = hiv_test_resultPositive, -->
+<!--          `Cavitation` = `cavityYes`, -->
+<!--          `Clin. diagn.` = `clindiagYes`) %>% -->
+<!--   dplyr::select(-`.chain`,-`.iteration`,-`.draw`) %>% -->
+<!--   melt("outcome") %>% -->
+<!--   mutate(outcome = factor(outcome, levels = c("QoL-PCS", "QoL-MCS", "PHQ9-S", "6MWT-D")), -->
+<!--          variable = factor(variable, levels = c("Age<25y", "Female", "HIV+", "Clin. diagn.", "Cavitation", "High bact. load")))  -->
+
+<!-- # plot -->
+<!-- plot_b <- draws_cc_assoc %>% -->
+<!--   group_by(variable, outcome) %>% -->
+<!--   median_qi() %>% -->
+<!--   ungroup() %>% -->
+<!--   ggplot(aes(x = value, xmin = .lower, xmax = .upper, y = variable, color = outcome, group = outcome)) + -->
+<!--   geom_errorbar(position = position_dodge(width = .75), width = .5, linewidth = .66) + -->
+<!--   geom_pointrange(position = position_dodge(width = .75), shape = 23, fill = "white", linewidth = .66, size = .33) + -->
+<!--   #stat_pointinterval(fill = "white", shape = 21, point_size = 2, position = position_dodge2(width = 10), .width = c(0.95)) + -->
+<!--   geom_vline(aes(xintercept = 0), linetype = "dotted", color = "red") + -->
+<!--   scale_color_manual(values = wes_palette("Darjeeling2")) + -->
+<!--   labs(title = "B: Association of changes in health\nscores with baseline characteristics.", -->
+<!--        x = "Estimated difference (pp)") + -->
+<!--   scale_x_continuous(labels = scales::percent_format(suffix = ""), breaks = seq(-1, 1, .25)) + -->
+<!--   theme_custom() +  -->
+<!--   theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), -->
+<!--         legend.position = "none", -->
+<!--         plot.title.position = "plot", -->
+<!--         plot.title = element_text(face = 1, size = 8))  -->
+
+<!-- plot_b -->
+
+<!-- legend_grob <- ggplot() + -->
+<!--   theme( -->
+<!--     panel.background = element_rect(fill='transparent'), #transparent panel bg -->
+<!--     plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg -->
+<!--     panel.grid.major = element_blank(), #remove major gridlines -->
+<!--     panel.grid.minor = element_blank(), #remove minor gridlines -->
+<!--     legend.background = element_rect(fill='transparent'), #transparent legend bg -->
+<!--     legend.box.background = element_rect(fill='transparent') #transparent legend panel -->
+<!--   ) + cowplot::get_legend(plot_a)  -->
+<!-- plot_a_nL <- plot_a + theme(legend.position = "none") -->
+<!-- plot_b_nL <- plot_b + theme(legend.position = "none") -->
+<!-- plot_title <- grid::textGrob("Figure.", gp = grid::gpar(fontsize = 8, fontface = "bold")) -->
+<!-- plot_ab <- ((plot_a_nL + plot_spacer() + plot_b_nL) + ((plot_spacer() +  plot_spacer() + legend_grob))) +  -->
+<!--   plot_annotation(title = "Figure.", -->
+<!--                   caption = "Reference: male, <25y, HIV–, clinically undiagnosed, no cavitation.\nViolin plots: posterior distribution; medians: dots, lines: 95%-CIs. PP=percentage points. ", -->
+<!--                   theme = theme_custom()) + -->
+<!--   plot_layout(widths = c(1.25, .01, 1.05), heights = c(0.95, 0.05), nrow = 2)  -->
+<!-- #save_plot(plot_ab, pdf_file = "../results/croi-abstract-result-plot.pdf", w = 10.15, h = 10.15) -->
+<!-- save_plot(plot_ab, pdf_file = "../results/croi-abstract-result-plot.png", w = 10.15, h = 10.15) -->
+<!-- ``` -->
