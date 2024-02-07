@@ -31,10 +31,20 @@ median_iqr <- function(x, name = "") {
 #'
 
 count_bin <- function(x, name = "") {
-  n <- sum(x, na.rm = TRUE)
-  p <- round(100 * n / length(x))
-  nas <- sum(is.na(x))
-  paste0(name, n, " (", p, "%, NA ", nas, ")")
+  n0 <- length(x)
+  n1 <- sum(x, na.rm = TRUE)
+  n3 <- sum(is.na(x))
+  n2 <- n0 - n1 - n3
+  n <- c(n0, n1, n2, n3)
+  p <- round(100 * n[-1] / n[1])
+
+
+  paste0(
+    name,
+    "Yes: ", n[2], " (", p[1], "%)",
+    ", No: ", n[3], " (", p[2], "%)",
+    ", NA: ", n[4], " (", p[3], "%)"
+  )
 }
 
 

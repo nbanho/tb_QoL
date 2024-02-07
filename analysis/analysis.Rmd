@@ -6,20 +6,25 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 knitr::opts_knit$set(root.dir = "..")
+
+re_fit <- FALSE
 ```
 
 ## Libraries
 
 Loading packages...
 
-```{r, include=FALSE}
+```{r libraries, include=FALSE}
 library(tidyverse)
 library(reshape2)
 library(rstanarm)
+library(brms)
 library(rstan)
 library(tidybayes)
+library(mice)
+library(klaR)
 source("utils/plotting.R")
 source("utils/summaries.r")
 ```
@@ -29,9 +34,10 @@ source("utils/summaries.r")
 
 Loading data...
 
-```{r, include=FALSE}
+```{r data, include=FALSE}
 # data of patients with at least one outcome
-qol <- readRDS("data-clean/phys-ment-data.rds")
+qol <- readRDS("data-clean/phys-ment-data.rds") %>%
+  arrange(time, record_id)
 qol_start <- filter(qol, time == "Start treatment")
 qol_end <- filter(qol, time == "End treatment")
 qol_post <- filter(qol, time == "Post treatment")
@@ -60,47 +66,115 @@ predictor <- c(
   "mdr" = "MDR",
   "cavity" = "Cavitation"
 )
+predictor_2 <- predictor
+predictor_2[1] <- "Age<30"
+
+sites <- c("South Africa", "Malawi", "Mosambique", "Zambia", "Zimbabwe")
+
+treat_effect_lab <- c("End vs Start treatment", "Post vs End treatment")
 ```
 
-* We analyze all patients with complete data, i.e. data recorded at treatment start & end and post treatment.
-* Thereby, we also include patients that are lost to follow-up, i.e. no recorded data in 8 months since last visit.
-* Outcomes for those lost to follow-up are treated as NA (not available).
-* There may be further NAs for single outcomes, i.e. some endpoints not recorded / measured.
-* Additionally, we include deaths, which we impute during modeling with worst outcomes (i.e. maximum/mininum).
+**Outcomes**:
+
+The quality of life **(QoL)** outcomes:
+
+* PHQ9-S: Patient Health Questionnaire 9 - Score
+* QoL-MCS: Quality of Life - Mental Component Score
+* QoL-PCS: Quality of Life - Physical Component Score
+* 6MWT-D: 6 Minute Walk Test - Distance
+* STST-R: Sit-to-Stand Test - Number of Repetitions
+
+Respective we define impaired QoL as the following binary outcomes:
+
+1. PHQ9-S > 10
+2. QoL-MCS < 42
+3. QoL-PCS < 50
+4. 6MWT-D < 400m
+5. STST-R < 20
+
+
+**Exclusion:**
+
+We exclude observations where we still wait for the next clinical visit.
+That is, end of treatment or post treatment is still within 8mo since last visit.
+Patients who died were only considered once at the the time of their death.
+For example, if a patient died during treatment, we only consider the start and end of treatment, not post treatment.
+
+
+**Missing observations**:
+
+The outcomes can be missing for one of the following reasons:
+
+1. *Death*: The patient died.
+2. *LTFU*: The patient was lost to follow-up (LTFU).
+3. *Unrecorded*: The outcome was not recorded.
+
+
+**Patient characteristics**:
+
+The predictors we consider are:
+
+1. Age
+2. sex
+3. HIV test result
+4. Multi-drug resistant TB (MDR-TB)
+5. Presence of cavitation on chest X-ray.
+
+
+**TB treatment outcome**:
+
+The association with TB treatment outcome is currently not analyzed because it is mostly missing. 
+Also, a treatment failure can result in death. 
+Coding death as impaired QoL, dead patients would need to be excluded from the analysis.
 
 ## Descriptives
 
 ### Study population
 
-```{r, echo=F, warning=FALSE, message=FALSE}
+```{r sample}
 print(
   sprintf(
     "Total: %i patients with %i observations.",
-    nrow(qol) / 3, nrow(qol)
+    n_distinct(qol$record_id), nrow(qol)
   )
 )
 ```
 
-**Figure**: Proportion of patients lost to follow-up (LTFU).
+**Figure:** Number of observations by time.
 
-```{r, echo=F, warning=FALSE, message=FALSE}
-# no ltfu
+```{r observations}
 qol %>%
   group_by(time) %>%
-  summarize(p = sum(ltfu, na.rm = T) / n()) %>%
+  summarize(n = n()) %>%
   ungroup() %>%
-  ggplot(aes(x = time, y = p)) +
+  ggplot(aes(x = time, y = n)) +
   geom_bar(stat = "identity") +
-  scale_y_continuous(expand = c(0, 0)) +
-  labs(y = "Proportion of patients (%)") +
+  geom_text(aes(label = n), size = 8 / cm(1), vjust = -1) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(y = "No. of observations") +
   theme_custom() +
-  theme(axis.title.x = element_blank())
+  theme(
+    axis.title.x = element_blank()
+  )
 ```
 
-**Figure**: Patient characteristics.
+**Figure**: Proportion of patients lost to follow-up (LTFU).
 
-```{r, echo=F, warning=FALSE, message=FALSE}
-# patient characteristics
+```{r lost-to-follow-up}
+qol %>%
+  group_by(time) %>%
+  summarize(
+    `no. LTFU` = sum(ltfu),
+    `proportion` = paste0(round(sum(ltfu) / n() * 100), "%")
+  )
+```
+
+**Table**: Patient characteristics.
+
+```{r predictors}
 qol_start %>%
   dplyr::select(all_of(names(predictor))) %>%
   gather() %>%
@@ -117,18 +191,42 @@ qol_start %>%
   set_names(c("Variable", "Summary"))
 ```
 
-```{r, echo=F, warning=FALSE, message=FALSE}
-# sites
-count_cat(qol_start$site)
+**Figure**: Share of sites.
+
+```{r sites}
+qol_start %>%
+  group_by(site) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  ggplot(aes(x = site, y = n)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), size = 8 / cm(1), vjust = -1) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(y = "No. of patients") +
+  theme_custom() +
+  theme(
+    axis.title.x = element_blank()
+  )
+```
+
+**Table**: TB Treatment outcomes.
+
+```{r tb-treatment-outcomes}
+qol %>%
+  filter(time == "End treatment") %>%
+  summarize(`treatment success` = count_bin(treat_success))
 ```
 
 ### Outcomes
 
 #### Summary
 
-**Table**: Summary of continuous outcomes at treatment start and end and post treatment. NAs (including LTFU and deaths) excluded.
+**Table**: Summary of continuous QoL outcomes.
 
-```{r, echo = F, warning=FALSE, message=FALSE}
+```{r summaries}
 # start of treatment
 qol_start %>%
   dplyr::select(all_of(names(outcome_cont))) %>%
@@ -163,18 +261,13 @@ qol_post %>%
   set_names(c("Outcome", "Median (IQR) post treatment"))
 ```
 
-#### Treatment comparison
+#### Distribution
 
-**Figure**: Distribution of continuous outcomes at treatment start and end and post treatment. Deaths imputed with worst outcomes.
+**Figure**: Distribution of continuous QoL outcomes, excluding missing observations.
 
-```{r, echo = F, warning=FALSE, message=FALSE}
-qol %>%
-  dplyr::select(all_of(c("time", "death", "ltfu", names(outcome_cont)))) %>%
-  mutate(across(
-    all_of(names(outcome_cont)),
-    ~ ifelse(death == 1 & is.na(ltfu), max(.x, na.rm = TRUE), .x)
-  )) %>%
-  dplyr::select(-death, -ltfu) %>%
+```{r density-distribution}
+qol_denesity <- qol %>%
+  dplyr::select(all_of(c("time", names(outcome_cont)))) %>%
   melt("time") %>%
   rename(outcome = variable) %>%
   mutate(outcome = recode(outcome, !!!outcome_cont)) %>%
@@ -191,17 +284,23 @@ qol %>%
     legend.title = element_blank(),
     axis.title.x = element_blank()
   )
+
+save_plot(
+  qol_denesity,
+  pdf_file = "results/outcome-density-distribution.png",
+  w = 16, h = 12
+)
 ```
 
-**Figure:** Proportion of patients with health conditions.
+**Figure:** Proportion of patients with impaired QoL.
 
-```{r, echo = F, warning=FALSE, message=FALSE}
+```{r proportions}
 var_names <- c(
   "Y" = "Yes",
   "N" = "No",
   "D" = "Death",
-  "U" = "Unrecorded",
-  "L" = "LTFU"
+  "L" = "LTFU",
+  "U" = "Unrecorded"
 )
 
 qol_bin_comp <- qol %>%
@@ -211,9 +310,9 @@ qol_bin_comp <- qol %>%
   summarize(
     Y = sum(value, na.rm = TRUE),
     N = sum(value == 0, na.rm = TRUE),
-    D = sum(death == 1 & is.na(value) & time != "Start treatment"),
-    U = sum(is.na(value) & !ltfu & death == 0, na.rm = TRUE),
-    L = sum(ltfu & death == 0, na.rm = TRUE)
+    D = sum(death),
+    U = sum(is.na(value) & !ltfu & !death, na.rm = TRUE),
+    L = sum(ltfu, na.rm = TRUE)
   ) %>%
   ungroup() %>%
   rename(outcome = variable) %>%
@@ -239,11 +338,11 @@ qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
     data = filter(qol_bin_comp, variable == "Yes"),
     mapping = aes(group = time, label = paste0(round(p), "%")),
     vjust = -.5, size = 8 / cm(1),
-    color = wes_palette("AsteroidCity2")[1],
+    color = wes_palette("Royal2")[1],
     show.legend = FALSE
   ) +
   scale_fill_manual(
-    values = wes_palette("AsteroidCity2"),
+    values = wes_palette("Royal2"),
   ) +
   scale_x_discrete(labels = c("Start", "End", "Post")) +
   scale_y_continuous(expand = c(0, 0)) +
@@ -259,27 +358,25 @@ qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
     fill = guide_legend(title = element_blank())
   )
 
-qol_bin_comp_pl
-
 save_plot(
   qol_bin_comp_pl,
-  pdf_file = "results/score-treatment-comparison.png",
+  pdf_file = "results/impaired-qol.png",
   w = 16, h = 10
 )
 ```
 
 #### Changes
 
-**Figure**: Changes in health conditions. Deaths are imputed with worst outcomes.
+**Figure**: Changes in QoL. Deaths imputed as impaired QoL. Unknown if QoL unrecorded or waiting for next clinical visit.
 
-```{r, echo = F, warning=FALSE, message=FALSE}
+```{r changes}
 qol_changes <- qol %>%
   dplyr::select(
     all_of(c("record_id", "time", "ltfu", "death", names(outcome_bin)))
   ) %>%
   mutate(across(
     all_of(names(outcome_bin)),
-    ~ ifelse(death == 1 & is.na(value) & time != "Start treatment", 1, .x)
+    ~ ifelse(death, 1, .x)
   )) %>%
   dplyr::select(-death, -ltfu) %>%
   melt(c("record_id", "time")) %>%
@@ -288,18 +385,36 @@ qol_changes <- qol %>%
     change_end = `End treatment` - `Start treatment`,
     change_post = `Post treatment` - `End treatment`
   ) %>%
-  dplyr::select(record_id, variable, change_end, change_post) %>%
   rename(outcome = variable) %>%
-  melt(c("record_id", "outcome")) %>%
   mutate(
-    variable = ifelse(variable == "change_end", "End vs Start", "Post vs End"),
-    value =
-      ifelse(is.na(value), "Unknown",
-        ifelse(value == -1, "Improved",
-          ifelse(value == 0, "Unchanged", "Worsened")
+    change_end =
+      ifelse(is.na(change_end), "Unknown",
+        ifelse(change_end == -1, "Improved",
+          ifelse(change_end == 1, "Worsened",
+            ifelse(`Start treatment` == 1, "No improvement", "Stable")
+          )
         )
       ),
-    value = factor(value, levels = c("Unknown", "Worsened", "Unchanged", "Improved")), # nolint
+    change_post =
+      ifelse(is.na(change_post), "Unknown",
+        ifelse(change_post == -1, "Improved",
+          ifelse(change_post == 1, "Worsened",
+            ifelse(`End treatment` == 1, "No improvement", "Stable")
+          )
+        )
+      )
+  ) %>%
+  dplyr::select(record_id, outcome, change_end, change_post) %>%
+  melt(c("record_id", "outcome")) %>%
+  mutate(
+    value = factor(
+      value,
+      levels = c(
+        "Worsened", "No improvement",
+        "Unknown",
+        "Stable", "Improved"
+      )
+    ),
     outcome = recode(gsub("_bin", "", outcome), !!!outcome_cont),
     outcome = factor(outcome, levels = outcome_cont)
   )
@@ -310,7 +425,15 @@ qol_changes_sum <- qol_changes %>%
   ungroup() %>%
   group_by(outcome, variable) %>%
   mutate(p = 100 * n / sum(n)) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(variable = ifelse(
+    variable == "change_end",
+    treat_effect_lab[1],
+    treat_effect_lab[2]
+  ), variable = factor(variable, levels = treat_effect_lab))
+
+change_cols <- RColorBrewer::brewer.pal(5, "RdYlBu")
+change_cols[3] <- "grey"
 
 qol_changes_sum_pl <- ggplot(
   data = qol_changes_sum,
@@ -322,12 +445,11 @@ qol_changes_sum_pl <- ggplot(
     data = filter(qol_changes_sum, value == "Improved"),
     mapping = aes(group = value, label = paste0(round(p), "%")),
     vjust = -.5, size = 8 / cm(1),
-    color = wes_palette("AsteroidCity2")[3],
-    show.legend = F
+    color = change_cols[5],
+    show.legend = FALSE
   ) +
   scale_fill_manual(
-    values = c(rev(wes_palette("AsteroidCity2")[1:3]), "grey"),
-    breaks = c("Improved", "Unchanged", "Worsened", "Unknown")
+    values = change_cols,
   ) +
   scale_y_continuous(expand = c(0, 0)) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
@@ -342,15 +464,18 @@ qol_changes_sum_pl <- ggplot(
     alpha = guide_legend(title = element_blank())
   )
 
-qol_changes_sum_pl
+save_plot(
+  qol_changes_sum_pl,
+  pdf_file = "results/changes-in-qol.png",
+  w = 16, h = 10
+)
 ```
-
 
 #### Stratum flow 
 
-**Figure**: Patient flow between health stratums.
+**Figure**: Patient flow between stratums.
 
-```{r, echo = F, warning=FALSE, message=FALSE}
+```{r flow, fig.height=10}
 # define categories
 sankey_cats <- data.frame(
   outcome = outcome_cont,
@@ -392,10 +517,7 @@ links <- qol %>%
           )
         )
       ),
-    value = factor(
-      value,
-      levels = c("Yes", "No", "Death", "Unrecorded", "LTFU")
-    )
+    value = factor(value, levels = rev(var_names))
   ) %>%
   group_by(outcome, time, value) %>%
   mutate(freq = n()) %>%
@@ -413,8 +535,8 @@ flow_pl <- links %>%
   geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
   geom_stratum() +
   geom_text(stat = "stratum", size = 8 / cm(1)) +
-  scale_fill_manual(values = wes_palette("AsteroidCity2")) +
-  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(values = rev(wes_palette("Royal2"))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
   scale_x_discrete(labels = c("Start", "End", "Post")) +
   labs(x = "Treatment") +
   theme_custom() +
@@ -427,148 +549,350 @@ flow_pl <- links %>%
 save_plot(
   flow_pl,
   pdf_file = "results/sankey.png",
-  w = 16, h = 12
+  w = 16, h = 20
 )
 ```
 
-## Modeling
+## Imputation
 
-### Multivariate treatment effects
+Before modeling, we impute the missing values in the binary QoL outcome.
+We will exclude LTFU, thereby assuming they are similar to the observed patients.
+Deaths will be imputed as having the health condition. 
 
-```{r}
-# create stan data
-sdmult <- list()
-sdmult$y <- qol %>%
-  dplyr::select(all_of(names(outcome_cont))) %>%
-  as.matrix()
-sdmult$y <- scale(sdmult$y, center = TRUE, scale = TRUE)
-sdmult$y_means <- attr(sdmult$y, "scaled:center")
-sdmult$y_sd <- attr(sdmult$y, "scaled:scale")
-sdmult$y_cutoffs <- c(10, 42, 50, 400, 20)
-sdmult$y_missing <- matrix(0, nrow(sdmult$y), ncol(sdmult$y))
-m <- 1
-for (i in 1:nrow(sdmult$y)) {
-  for (k in 1:ncol(sdmult$y)) {
-    if (is.na(sdmult$y[i, k])) {
-      sdmult$y_missing[i, k] <- m
-      m <- m + 1
-    } else {
-      sdmult$y_missing[i, k] <- 0
-    }
-  }
-}
-sdmult$y[is.na(sdmult$y)] <- -9999
-sdmult$x <- qol %>%
+Thus, we will subsequently impute the "unrecorded" outcomes. 
+For this, we use mice (Multivariate Imputation by Chained Equations).
+Imputation will be based on the other outcomes, treatment time, and patient characteristics.
+
+**Figure**: Imputation check for a random sample of 40 patients, showing the imputed majority label across datasets.
+
+```{r imputation, fig.height=12}
+# wide format
+qol_excl_ltfu <- qol %>%
+  # impute deaths
+  mutate(across(
+    all_of(names(outcome_bin)),
+    ~ ifelse(death, 1, .x)
+  )) %>%
+  # exclude ltfu
+  filter(!ltfu) %>%
+  ungroup() %>%
   mutate(
-    treat_end = ifelse(time == "End treatment", 1, 0),
-    treat_post = ifelse(time == "Post treatment", 1, 0),
-    age30 = ifelse(age <= 30, 1, 0)
+    age = ifelse(age < 30, 1, 0),
+    across(c(-record_id, -time), ~ ifelse(.x == 1, "Yes", "No")),
+    across(c(-record_id, -time), ~ factor(.x, levels = c("No", "Yes")))
   ) %>%
-  dplyr::select(treat_end, treat_post, age30, sex, hiv_test_result, drug_resistant, cavity) %>%
-  as.matrix()
-sdmult$N <- nrow(sdmult$y)
-sdmult$K <- ncol(sdmult$y)
-sdmult$J <- ncol(sdmult$x)
-sdmult$M <- max(sdmult$y_missing)
+  dplyr::select(all_of(c(
+    "record_id",
+    "time",
+    names(outcome_bin),
+    names(predictor)
+  )))
 
-# model
-mod_multi <- stan(
-  file = "models/multivariate.stan",
-  data = sdmult, seed = 12345, cores = 2
+# imputation
+n_datasets <- 10
+qol_excl_ltfu_imp <- mice(
+  qol_excl_ltfu[, -1],
+  m = n_datasets,
+  maxit = 10,
+  seed = 12345,
+  print = FALSE
 )
+# plot(qol_excl_ltfu_imp, layout = c(2, 8))
 
-# summary
-summary(mod_multi, probs = c(.025, .975), pars = c("beta", "L_Omega"))$summary
-spread_draws(mod_multi, beta[k, t]) %>%
-  mutate(t = ifelse(t == 1, "Start treatment", "Post treatment")) %>%
-  left_join(data.frame(k = 1:5, outcome = outcome_cont), by = "k") %>%
-  ggplot(aes(x = beta, y = outcome)) +
-  facet_wrap(~ factor(t, levels = c("Start treatment", "Post treatment"))) +
-  geom_vline(aes(xintercept = 0), linetype = "dotted", color = "red") +
-  stat_pointinterval(point_size = 2, .width = c(0.95))
+# data
+qol_imp <- complete(qol_excl_ltfu_imp, "long") %>%
+  mutate(record_id = rep(qol_excl_ltfu$record_id, times = n_datasets))
 
-assoc_cont <- spread_draws(mod_multi, beta[k, j]) %>%
-  filter(j > 2) %>%
-  left_join(data.frame(k = 1:5, outcome = outcome_cont), by = "k") %>%
-  left_join(
-    data.frame(
-      j = 3:ncol(sdmult$x),
-      pred_var = predictor
-    ),
-    by = "j"
+# check majority label
+stat_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+qol_excl_ltfu_imp_mode <- qol_imp %>%
+  dplyr::select(all_of(c(".imp", "record_id", "time", names(outcome_bin)))) %>%
+  melt(c(".imp", "record_id", "time")) %>%
+  group_by(record_id, time, variable) %>%
+  summarize(
+    value = stat_mode(value)
   ) %>%
-  mutate(
-    outcome = factor(outcome, levels = outcome_cont),
-    pred_var = ifelse(pred_var == "Age", "Age<30", pred_var),
-    preditor = factor(pred_var, levels = c("Age<30", predictor[-1]))
+  rename(imputed = value) %>%
+  left_join(
+    qol_excl_ltfu %>%
+      dplyr::select(all_of(c("record_id", "time", names(outcome_bin)))) %>%
+      melt(c("record_id", "time")) %>%
+      rename(observed = value),
+    by = c("record_id", "time", "variable")
+  ) %>%
+  mutate(is_observed = ifelse(is.na(observed), FALSE, TRUE)) %>%
+  rename(outcome = variable)
+
+check_imp_pl <- qol_excl_ltfu_imp_mode %>%
+  group_by(record_id) %>%
+  filter(any(!is_observed)) %>%
+  ungroup() %>%
+  filter(record_id %in% sample(unique(record_id), 40)) %>%
+  ggplot(aes(y = time, x = outcome, color = is_observed, label = imputed)) +
+  geom_text(size = 8 / cm(1)) +
+  facet_wrap(~record_id, ncol = 4) +
+  labs(color = "Is observed") +
+  scale_x_discrete(labels = function(x) outcome_bin) +
+  scale_y_discrete(labels = function(x) c("Start", "End", "Post")) +
+  theme_custom() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
+save_plot(
+  check_imp_pl,
+  pdf_file = "results/imputation-check.png",
+  w = 16, h = 30
+)
+```
 
-assoc_cont_pl <- assoc_cont %>%
-  ggplot(aes(x = beta, y = pred_var)) +
-  facet_wrap(~outcome, nrow = 1) +
-  geom_vline(aes(xintercept = 0), linetype = "dotted", color = "red") +
+
+## Modeling
+
+### Association with patient characteristics at baseline
+
+The association between patient characteristics and QoL at the start of treatment is estimated using a logistic regression model.
+We use a multilevel model, which partially pools the association across outcomes. 
+Furthermore, the estimation is performed on each imputed dataset and the estimates are pooled across datasets. 
+
+**Figure**: Estimated association of QoL at baseline with patient characteristics.
+
+```{r association-baseline}
+# prepare data
+qol_start_long <- qol_imp %>%
+  filter(time == "Start treatment") %>%
+  dplyr::select(all_of(c(
+    ".imp",
+    "record_id",
+    names(outcome_bin),
+    names(predictor)
+  ))) %>%
+  mutate(across(
+    c(-`.imp`, -`record_id`),
+    ~ ifelse(.x == "Yes", 1, 0)
+  )) %>%
+  melt(c("record_id", ".imp", names(predictor))) %>%
+  nest(data = -c(`.imp`))
+
+# estimate models
+if (re_fit) {
+  assoc_base_mod <- brm_multiple(
+    data = qol_start_long$data,
+    formula = value ~ age + sex + hiv + mdr + cavity +
+      (1 + age + sex + hiv + mdr + cavity | variable),
+    family = bernoulli(link = "logit"),
+    prior = c(
+      prior(normal(0, 1), class = sd),
+      prior(normal(0, 2.5), class = b),
+      prior(normal(0, 10), class = Intercept)
+    ),
+    chains = 4, iter = 2000,
+    seed = 12345,
+    cores = 4
+  )
+
+  saveRDS(assoc_base_mod, "fitted-models/assoc_base_mod.rds")
+} else {
+  assoc_base_mod <- readRDS("fitted-models/assoc_base_mod.rds")
+}
+
+
+# posterior draws
+assoc_base_draws_pop <- assoc_base_mod %>%
+  spread_draws(
+    b_age,
+    b_sex,
+    b_hiv,
+    b_mdr,
+    b_cavity
+  ) %>%
+  melt(c(".chain", ".iteration", ".draw")) %>%
+  rename(predictor = variable) %>%
+  mutate(predictor = gsub("b_", "", predictor))
+
+assoc_base_draws_re <- assoc_base_mod %>%
+  spread_draws(
+    r_variable[outcome, predictor]
+  ) %>%
+  rename(value = r_variable)
+
+assoc_base_draws <- left_join(
+  assoc_base_draws_pop,
+  assoc_base_draws_re,
+  by = c(".chain", ".iteration", ".draw", "predictor")
+) %>%
+  mutate(
+    value = value.x + value.y,
+    value = exp(value),
+    predictor = recode(predictor, !!!predictor_2),
+    outcome = recode(outcome, !!!outcome_bin),
+    outcome = factor(outcome, levels = outcome_bin),
+    predictor = factor(predictor, levels = predictor_2)
+  )
+
+# plot associations
+assoc_base_pl <- assoc_base_draws %>%
+  ggplot(aes(x = value, y = outcome)) +
+  facet_wrap(~predictor, ncol = 2) +
+  geom_vline(aes(xintercept = 1), linetype = "dotted", color = "red") +
   stat_pointinterval(
     .width = c(.5, 0.95),
-    point_size = 1, shape = 21, point_fill = "white"
+    point_size = 1,
+    shape = 21, point_fill = "white"
   ) +
-  scale_x_continuous(breaks = scales::breaks_pretty(5), limits = c(-1, 1)) +
   labs(
-    x = "Estimated association (z score)",
-    title = "Estimated association between health scores and patient characteristics",
-    subtitle = "Association shown as changes in z-scores of continuous outcomes"
+    x = "Adj. Odds Ratio",
   ) +
   theme_custom() +
   theme(axis.title.y = element_blank())
 
 save_plot(
-  assoc_cont_pl,
-  pdf_file = "results/continuous-score-association.png",
+  assoc_base_pl,
+  pdf_file = "results/association-predictors-baseline.png",
+  w = 16, h = 10
+)
+```
+
+### QoL impairment over time
+
+The proportion of patients with impaired QoL for each outcome is estimated using binomial models.
+Again, the estimates are pooled across the imputed datasets.
+Patients lost-to-follow-up are excluded from the analysis, i.e. assuming they are similar to the studied population.
+
+**Figure**: Estimated treatment effects. 
+
+```{r treatment-effects}
+# create binomial datasets
+qol_binom <- qol_imp %>%
+  dplyr::select(all_of(c(".imp", "record_id", "time", names(outcome_bin)))) %>%
+  melt(c(".imp", "record_id", "time")) %>%
+  rename(outcome = variable) %>%
+  group_by(`.imp`, time, outcome) %>%
+  summarize(
+    n = n(),
+    x = sum(value == "Yes")
+  ) %>%
+  ungroup() %>%
+  mutate(p = x / n) %>%
+  nest(data = c(-`.imp`))
+
+# estimate models
+if (re_fit) {
+  binom_mod <- brm_multiple(
+    data = qol_binom$data,
+    formula = bf(x | trials(n) ~ 1 + time + (1 + time | outcome)),
+    family = binomial(link = "logit"),
+    prior = c(
+      prior(normal(0, 1), class = sd),
+      prior(normal(0, 10), class = Intercept)
+    ),
+    chains = 4,
+    iter = 2000,
+    seed = 12345,
+    cores = 4
+  )
+
+  saveRDS(binom_mod, "fitted-models/mod_binom.rds")
+} else {
+  binom_mod <- readRDS("fitted-models/mod_binom.rds")
+}
+
+# treatment effects
+treat_effect_draws_pop <- binom_mod %>%
+  spread_draws(
+    b_timeEndtreatment,
+    b_timePosttreatment
+  ) %>%
+  melt(c(".chain", ".iteration", ".draw")) %>%
+  rename(time = variable) %>%
+  mutate(time = gsub("b_", "", time))
+
+treat_effect_draws_re <- binom_mod %>%
+  spread_draws(
+    r_outcome[outcome, time]
+  ) %>%
+  rename(value = r_outcome) %>%
+  filter(time != "Intercept")
+
+treat_effect_draws <- left_join(
+  treat_effect_draws_pop, treat_effect_draws_re,
+  by = c(".chain", ".iteration", ".draw", "time")
+) %>%
+  mutate(value = value.x + value.y) %>%
+  dplyr::select(-`value.x`, -`value.y`) %>%
+  dcast(`.chain` + `.iteration` + `.draw` + outcome ~ time) %>%
+  mutate(timePosttreatment = timePosttreatment - timeEndtreatment) %>%
+  melt(c(".chain", ".iteration", ".draw", "outcome")) %>%
+  rename(time = variable) %>%
+  mutate(
+    value = exp(value),
+    time = ifelse(
+      time == "timeEndtreatment",
+      treat_effect_lab[1],
+      treat_effect_lab[2]
+    ),
+    time = factor(time, levels = treat_effect_lab),
+    outcome = recode(outcome, !!!outcome_bin),
+    outcome = factor(outcome, levels = outcome_bin)
+  )
+
+treat_effects_pl <- treat_effect_draws %>%
+  ggplot(aes(x = value, y = outcome)) +
+  facet_wrap(~time) +
+  geom_vline(aes(xintercept = 1), linetype = "dotted", color = "red") +
+  scale_x_continuous(limits = c(0, NA)) +
+  labs(x = "Estimated Adj. OR") +
+  stat_pointinterval(point_size = 2) +
+  theme_custom() +
+  theme(axis.title.y = element_blank())
+
+save_plot(
+  treat_effects_pl,
+  pdf_file = "results/treatment-effects.png",
   w = 16, h = 6
 )
+```
 
+**Figure**: Estimated proportion of patients with impaired QoL. Pr = Bayesian probability that the proportions are unequal.
+
+```{r proportions-impaired-qol}
 # binary changes
-qol_pred <- spread_draws(mod_multi, y_pred[i, k]) %>%
-  left_join(data.frame(
-    k = 1:5,
-    outcome = outcome_bin,
-    y_mean = sdmult$y_means,
-    y_sd = sdmult$y_sd,
-    y_cut = sdmult$y_cutoffs
-  ), by = "k") %>%
-  left_join(
-    qol %>%
-      mutate(i = 1:n()) %>%
-      dplyr::select(i, record_id, time),
-    by = "i"
-  ) %>%
+qol_binom_pred <- qol_binom$data[[1]] %>%
+  modelr::data_grid(time, outcome, n = 100) %>%
+  add_epred_draws(binom_mod) %>%
   mutate(
-    y_pred = y_pred * y_sd + y_mean,
-    y_bin = ifelse(outcome == "PHQ9-S>10", y_pred > y_cut, y_pred < y_cut)
-  ) %>%
-  group_by(outcome, time, .draw) %>%
-  summarize(
-    n = sum(y_bin),
-    p = sum(y_bin) / n()
+    outcome = recode(outcome, !!!outcome_bin)
   ) %>%
   ungroup() %>%
-  mutate(outcome = factor(outcome, levels = outcome_bin))
+  mutate(p = `.epred` / n) %>%
+  dplyr::select(-`.chain`, -`.iteration`, -n, -`.row`, -`.epred`) %>%
+  rename(draw = `.draw`)
 
 # comparison
-qol_pred_comp <- qol_pred %>%
-  dplyr::select(outcome, time, p, .draw) %>%
-  rename(draw = `.draw`) %>%
-  dcast(formula = outcome + draw ~ time, value.var = "p") %>%
+qol_pred_comp <- qol_binom_pred %>%
+  dcast(outcome + draw ~ time) %>%
   mutate(
-    es = `End treatment` < `Start treatment`,
-    ep = `Post treatment` < `End treatment`
+    es1 = `End treatment` < `Start treatment`,
+    es2 = `End treatment` > `Start treatment`,
+    ep1 = `Post treatment` < `End treatment`,
+    ep2 = `Post treatment` > `End treatment`
   ) %>%
   group_by(outcome) %>%
-  summarise(
-    es = sum(es) / n(),
-    ep = sum(ep) / n()
+  summarise(across(c(es1, es2, ep1, ep2), ~ sum(.x) / n())) %>%
+  rowwise() %>%
+  mutate(
+    es = pmax(es1, es2),
+    ep = pmax(ep1, ep2)
   ) %>%
   ungroup() %>%
+  dplyr::select(outcome, es, ep) %>%
   melt("outcome") %>%
   rename(comparison = variable) %>%
   mutate(comparison = as.character(comparison))
@@ -584,7 +908,7 @@ qol_pred_comp_annon <- data.frame(
     xmax_ep = xmin_ep + 0.25
   ) %>%
   mutate(
-    ypos_es = qol_pred %>%
+    ypos_es = qol_binom_pred %>%
       filter(time %in% c("Start treatment", "End treatment")) %>%
       group_by(outcome, time) %>%
       summarize(ypos = quantile(p, .975)) %>%
@@ -594,7 +918,7 @@ qol_pred_comp_annon <- data.frame(
       ungroup() %>%
       dplyr::select(ypos) %>%
       unlist(),
-    ypos_ep = qol_pred %>%
+    ypos_ep = qol_binom_pred %>%
       filter(time %in% c("End treatment", "Post treatment")) %>%
       group_by(outcome, time) %>%
       summarize(ypos = quantile(p, .975)) %>%
@@ -622,7 +946,7 @@ qol_pred_comp <- qol_pred_comp %>%
   mutate(ypos = ypos + .05)
 
 # plot
-qol_pred_change_pl <- qol_pred %>%
+qol_pred_change_pl <- qol_binom_pred %>%
   ggplot(aes(x = outcome, y = p, color = time)) +
   stat_interval(aes(fill_ramp = after_stat(level)),
     position = position_dodge(width = .75),
@@ -644,13 +968,13 @@ qol_pred_change_pl <- qol_pred %>%
   ) +
   scale_color_manual(values = wes_palette("Moonrise2")) +
   scale_y_continuous(
-    expand = expansion(add = c(0, 0.05)), limits = c(0, 1),
+    expand = expansion(add = c(0, 0.05)),
+    limits = c(0, 1.05),
+    breaks = seq(0, 1, .25),
     labels = function(x) x * 100
   ) +
   labs(
-    y = "Proportion of patients (%)",
-    title = "Estimated changes in physical and mental health in TB patients",
-    subtitle = "Proportion of patients by changes between treatment end vs start and post treatment vs treatment end" # nolint
+    y = "Proportion of patients (%)"
   ) +
   theme_custom() +
   theme(
@@ -662,8 +986,290 @@ qol_pred_change_pl <- qol_pred %>%
 
 save_plot(
   qol_pred_change_pl,
-  pdf_file = "results/binary-score-estimated-treatment-change.png",
+  pdf_file = "results/treatment-binomial-comparison.png",
   w = 16, h = 10
 )
 ```
 
+### Clustering treatment changes
+
+Since there only few changes post treatment, we focus subsequently on the changes between start and end of treatment.
+For that purpose, we cluster the patients based on the changes in health conditions.
+Again, we exclude patients lost-to-follow-up.
+
+**Figure**: Changes in QoL through treatment for random sample of 40 patients.
+
+```{r individual-heatmap, fig.height=10}
+qol_treat_changes <- qol %>%
+  dplyr::filter(time %in% c("Start treatment", "End treatment")) %>%
+  mutate(across(
+    all_of(names(outcome_bin)),
+    ~ ifelse(death, 1, .x)
+  )) %>%
+  group_by(record_id) %>%
+  filter(
+    n() == 2,
+    !any(ltfu)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(record_id, time, all_of(names(outcome_bin))) %>%
+  melt(c("record_id", "time")) %>%
+  dcast(record_id + variable ~ time) %>%
+  mutate(
+    change = `End treatment` - `Start treatment`
+  ) %>%
+  rename(outcome = variable) %>%
+  mutate(
+    value =
+      ifelse(is.na(change), NA,
+        ifelse(change == -1, "Improved",
+          ifelse(change == 1, "Worsened",
+            ifelse(`Start treatment` == 1, "No improvement", "Stable")
+          )
+        )
+      ),
+    value = factor(value, levels = c("Worsened", "No improvement", "Stable", "Improved")), # nolint
+    outcome = recode(gsub("_bin", "", outcome), !!!outcome_cont),
+    outcome = factor(outcome, levels = outcome_cont)
+  )
+
+qol_treat_changes_id_pl <- qol_treat_changes %>%
+  filter(record_id %in% sample(record_id, 40)) %>%
+  ggplot(aes(x = outcome, y = record_id, fill = value)) +
+  geom_tile() +
+  scale_fill_brewer(palette = "RdYlBu", na.value = "grey") +
+  coord_cartesian(expand = FALSE) +
+  theme_custom() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "top"
+  )
+
+save_plot(
+  qol_treat_changes_id_pl,
+  pdf_file = "results/treat-change-individual-heatmap.png",
+  w = 16, h = 25
+)
+```
+
+We use the k-modes clustering algorithm, which is suitable for categorical data.
+The clustering is performed on the imputed data.
+We use the majority label for each imputed observation across datasets.
+The reason is that cluster labels are assigned manually, and it is easier to do this once than for all datasets separately.
+
+We tested various numbers of clusters.
+We could most clearly distinguish between two broad clusters.
+One cluster showed a majority of patients with stable or improved health conditions.
+The other cluster showed a majority of patients with stagnation or deterioration in health conditions.
+
+**Figure**: Clusters of changes in QoL through treatment.
+
+```{r clustering}
+# clustering
+treat_change_cat <- qol_excl_ltfu_imp_mode %>%
+  filter(time %in% c("Start treatment", "End treatment")) %>%
+  mutate(imputed = ifelse(imputed == "Yes", 1, 0)) %>%
+  dplyr::select(record_id, time, outcome, imputed) %>%
+  group_by(record_id, outcome) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  dcast(record_id + outcome ~ time) %>%
+  mutate(
+    change = `End treatment` - `Start treatment`
+  ) %>%
+  mutate(
+    value =
+      ifelse(change == -1, "Improved",
+        ifelse(change == 1, "Worsened",
+          ifelse(`Start treatment` == 1, "No improvement", "Stable")
+        )
+      ),
+    value = factor(value, levels = c("Worsened", "No improvement", "Stable", "Improved")), # nolint
+    value_int = as.integer(value)
+  ) %>%
+  dplyr::select(record_id, outcome, value_int) %>%
+  dcast(record_id ~ outcome)
+
+treat_change_cl <- klaR::kmodes(
+  treat_change_cat[, -1],
+  modes = 2,
+  iter.max = 100,
+  weighted = FALSE,
+  fast = TRUE
+)
+
+# plot cluster
+treat_change_cat_cl <- cbind(
+  treat_change_cat,
+  cluster = treat_change_cl$cluster
+) %>%
+  melt(c("record_id", "cluster")) %>%
+  mutate(value = recode(value, !!!c(
+    "1" = "Worsened",
+    "2" = "No improvement",
+    "3" = "Stable",
+    "4" = "Improved"
+  )), value = factor(
+    value,
+    levels = c(
+      "Worsened",
+      "No improvement",
+      "Stable",
+      "Improved"
+    )
+  ))
+
+treat_change_cat_cl_sum <- treat_change_cat_cl %>%
+  rename(outcome = variable) %>%
+  group_by(cluster, outcome, value) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  group_by(cluster, outcome) %>%
+  mutate(p = 100 * n / sum(n)) %>%
+  ungroup()
+
+treat_change_cl_pl <- treat_change_cat_cl_sum %>%
+  ggplot(aes(x = outcome, y = p, fill = value)) +
+  facet_wrap(~ paste("Cluster", cluster), ncol = 2) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    y = "Proportion of patients (%)",
+    fill = "Health condition"
+  ) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  scale_x_discrete(labels = function(x) outcome_bin) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_custom() +
+  theme(
+    legend.position = "top",
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+save_plot(
+  treat_change_cl_pl,
+  pdf_file = "results/treatment-change-cluster.png",
+  w = 16, h = 8
+)
+
+# label cluster
+tc_cl_name <- treat_change_cat_cl_sum %>%
+  group_by(cluster) %>%
+  summarize(
+    Improved = sum(p[value == "Stable"]),
+    Worsened = sum(p[value == "No improvement"]),
+  ) %>%
+  ungroup() %>%
+  melt("cluster") %>%
+  group_by(variable) %>%
+  mutate(r = rank(value)) %>%
+  ungroup() %>%
+  filter(r == 2)
+tc_cl_name_vec <- tc_cl_name$variable
+names(tc_cl_name_vec) <- tc_cl_name$cluster
+```
+
+**Figure**: Estimated association of patient characteristics with stagnation (no improvement) in QoL.
+
+```{r association-patient-characteristics}
+# add baseline characteristics
+treat_change_cl_id <- treat_change_cat_cl %>%
+  mutate(cluster = recode(cluster, !!!tc_cl_name_vec)) %>%
+  mutate(stagnation = ifelse(cluster == "Worsened", 1, 0)) %>%
+  group_by(record_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  left_join(
+    qol_start %>%
+      dplyr::select(all_of(c("record_id", names(predictor)))),
+    by = "record_id"
+  ) %>%
+  mutate(age = ifelse(age <= 30, 1, 0)) %>%
+  ungroup()
+
+# estimate association
+tc_assoc <- rstanarm::stan_glm(
+  stagnation ~ age + sex + hiv + mdr + cavity,
+  data = treat_change_cl_id,
+  family = binomial(link = "logit"),
+  seed = 12345,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4
+)
+
+# plot association
+tc_assoc_pl <- spread_draws(
+  tc_assoc,
+  age, sex, hiv, mdr, cavity
+) %>%
+  dplyr::select(age, sex, hiv, mdr, cavity) %>%
+  gather() %>%
+  mutate(
+    key = recode(key, !!!predictor_2),
+    key = factor(key, levels = predictor_2),
+    value = exp(value)
+  ) %>%
+  ggplot(aes(x = value, y = key)) +
+  geom_vline(aes(xintercept = 1), linetype = "dotted", color = "red") +
+  stat_pointinterval(
+    point_size = 2, .width = c(.5, .95),
+    shape = 21, point_fill = "white"
+  ) +
+  labs(
+    x = "Adj. Odds Ratio"
+  ) +
+  theme_custom() +
+  theme(axis.title.y = element_blank())
+
+save_plot(
+  tc_assoc_pl,
+  pdf_file = "results/treatment-change-association.png",
+  w = 8, h = 6
+)
+```
+
+*Next step:* Evaluate the association of TB treatment success with stagnation in QoL.
+However, treatment success is only available for a small subset of patients.
+The subset becomes even smaller when excluding deaths, i.e. focusing on survivors.  
+Thus, this analysis is currently not performed.
+
+```{r association-treat-outcome}
+# # subset of patients for which we have the treatment outcome
+# tb_treat_out <- qol %>%
+#   filter(
+#     time == "End treatment",
+#     !death,
+#     !is.na(treat_success)
+#   ) %>%
+#   dplyr::select(record_id, treat_success) %>%
+#   left_join(
+#     treat_change_cl_id %>%
+#       dplyr::select(record_id, stagnation),
+#     by = "record_id"
+#   )
+
+# # estimate association
+# tb_treat_out_assoc <- rstanarm::stan_glm(
+#   improvement ~ treat_success,
+#   data = tb_treat_out,
+#   family = binomial(link = "logit"),
+#   seed = 12345,
+#   chains = 4,
+#   iter = 2000,
+#   warmup = 1000,
+#   cores = 4
+# )
+
+# # report association
+# b_treat_success <- spread_draws(
+#   tb_treat_out_assoc,
+#   treat_success
+# ) %>%
+#   mutate(treat_success = exp(treat_success)) %>%
+#   median_qi()
+```

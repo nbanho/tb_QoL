@@ -28,7 +28,8 @@ df_prep <- df %>%
     mb_smear1_result_who, mb_smear1_result_who, # smear test result
     xr_cavitation_yn, # cavitation
     xr_opacity_percentage_nr, # opacity percentage
-    starts_with("phq_") # PHQ-9 questionnaire
+    starts_with("phq_"), # PHQ-9 questionnaire
+    tbh_tbtreat_outcome # tb treatment outcome
   ) %>%
   # rename variables
   rename(
@@ -79,6 +80,10 @@ df_prep <- df %>%
     clindiag = ifelse(is.na(clindiag), 1, clindiag),
     opacity = ifelse(is.na(opacity), 0, opacity),
     opacity = ifelse(opacity > 60, 1, 0),
+    treat_success =
+      ifelse(tbh_tbtreat_outcome %in% c(1, 2), 1,
+        ifelse(tbh_tbtreat_outcome == 3, 0, NA)
+      ),
     # recoding SF-12 quesstionnaire
     across(c(sf_moderate_act, sf_stairs), ~ ifelse(.x == 0, 3, .x)),
     across(
@@ -91,6 +96,8 @@ df_prep <- df %>%
     ),
     sf_pain = sf_pain + 1
   ) %>%
+  # filter test site
+  filter(site != "Test_site") %>%
   # rename SF12 variables
   rename(
     I1 = sf_health,
@@ -165,7 +172,8 @@ df_prep <- df %>%
   dplyr::select(
     record_id, time, date_visit, site, age, sex,
     hiv, mdr, highbact, cavity, clindiag, opacity,
-    sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score
+    sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score,
+    treat_success
   ) %>%
   mutate(across(
     c(age, hiv, mdr, highbact, cavity, clindiag, opacity),
@@ -188,8 +196,9 @@ df_full <- expand.grid(
   left_join(df_prep, by = c("record_id", "time")) %>%
   group_by(record_id) %>%
   fill(
-    age, sex, hiv, mdr,
+    site, age, sex, hiv, mdr,
     highbact, clindiag, cavity, opacity,
+    treat_success,
     .direction = "downup"
   ) %>%
   ungroup()
@@ -211,7 +220,6 @@ df %>%
     row.names = FALSE
   )
 
-
 df_death <- df %>%
   rename(death = death_yn) %>%
   dplyr::select(record_id, death) %>%
@@ -219,18 +227,26 @@ df_death <- df %>%
   group_by(record_id) %>%
   slice(1) %>%
   ungroup() %>%
-  mutate(death = as.integer(death))
+  mutate(death = TRUE)
 
 df_full <- df_full %>%
   left_join(df_death, by = "record_id") %>%
-  mutate(death = ifelse(is.na(death), 0, death))
+  mutate(
+    death = ifelse(is.na(death), FALSE, death),
+    death = ifelse(time == "Start treatment", FALSE, death)
+  )
 
-k_deaths <- sum(df_full$death == 1, na.rm = T)
+k_deaths <- df_full %>%
+  filter(death) %>%
+  group_by(record_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  nrow()
 
 print(
   sprintf(
-    "Deaths: %i (%i percent of total)",
-    k_deaths / 3, round(k_deaths / nrow(df_full) * 100)
+    "Deaths: %i (%i percent of patients)",
+    k_deaths, round(k_deaths / n_distinct(df_full$record_id) * 100)
   )
 )
 
@@ -263,34 +279,52 @@ df_full <- df_full %>%
         ifelse(time %in% c("End treatment", "Post treatment"),
           ifelse(lag(ltfu), TRUE, NA), NA
         )
-      )
+      ),
+    death = ifelse(!ana, FALSE, death),
+    ltfu = ifelse(death, FALSE, ltfu),
+    treat_success = ifelse(death, 0, treat_success),
   ) %>%
-  ungroup()
+  ungroup() %>%
+  # exclusion: post treatment data if death at end of treatment
+  group_by(record_id) %>%
+  mutate(cum_death = cumsum(death)) %>%
+  ungroup() %>%
+  filter(cum_death < 2) %>%
+  dplyr::select(-cum_death)
 
-table(df_full$ltfu, useNA = "always")
+table(df_full$ltfu, df_full$death, useNA = "always")
 
 # inclusion: complete case data including loss to follow-up
 df_cc <- df_full %>%
-  group_by(record_id) %>%
-  filter(all(!is.na(ltfu)) | all(death == 1)) %>%
-  ungroup()
+  filter(!is.na(ltfu))
+
 
 n <- nrow(df_full)
 k_incl <- nrow(df_cc)
+k_pat_incl <- n_distinct(df_cc$record_id)
 
 print(sprintf(
-  "Complete: %i with %i observations (%i percent)",
-  k_incl / 3, k_incl, round(k_incl / n * 100)
+  "Complete: %i patients with %i observations (%i percent)",
+  k_pat_incl,
+  k_incl,
+  round(k_incl / n * 100)
 ))
 
 # lost to follow-up
 k_ltfu <- df_full %>%
-  filter(ltfu, death == 0) %>%
+  filter(ltfu) %>%
   nrow()
+k_pat_ltfu <- df_full %>%
+  filter(ltfu) %>%
+  dplyr::select(record_id) %>%
+  unlist() %>%
+  n_distinct()
 
 print(sprintf(
-  "LTFU w/o deaths: %i (%i percent of total, %i percent of complete cases)",
-  k_ltfu / 3, round(k_ltfu / n * 100), round(k_ltfu / k_incl * 100)
+  "LTFU w/o deaths: %i (%i percent of patients, %i percent of complete data)",
+  k_pat_ltfu,
+  round(k_pat_ltfu / k_pat_incl * 100),
+  round(k_ltfu / k_incl * 100)
 ))
 
 # visit date date but missing information
@@ -298,8 +332,9 @@ strange <- filter(df_full, !ltfu, ana, !is.na(date_visit), death == 0)
 k_strange <- nrow(strange)
 
 print(sprintf(
-  "Fully incomplete: %i (%i percent of total, %i percent of complete data)",
-  k_strange, round(100 * k_strange / n), round(100 * k_strange / k_incl)
+  "All outcomes missing: %i (%i percent of complete data)",
+  k_strange,
+  round(100 * k_strange / k_incl)
 ))
 
 # exclusion

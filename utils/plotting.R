@@ -6,7 +6,7 @@ require(grid)
 require(Cairo)
 require(gg.layers)
 require(kunstomverse)
-require(networkD3)
+require(ggalluvial)
 require(wesanderson) # https://github.com/karthik/wesanderson
 
 # default colors
