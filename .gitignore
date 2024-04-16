@@ -6,6 +6,7 @@ doc/
 *.html
 *.DS_Store
 _old/
+fitted-models/*
 
 # History files
 .Rhistory

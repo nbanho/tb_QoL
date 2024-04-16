@@ -6,21 +6,76 @@ library(tidyverse)
 #### Data ####
 
 # raw data
-file_name <- "data-raw/reporting_file_all_29122023_mod.dta"
-df <- haven::read_dta(file_name)
+file_name <- "data-raw/1734TuberculosisPati_DATA_2024-04-05_1403.csv"
+df <- read.csv(file_name)
+
+# mental health data check
+df %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    redcap_data_access_group,
+    ment_trt_yn,
+    ment_healer_yn,
+    ment_inpatient_yn,
+    ment_outpatient_yn,
+    ment_med_yn
+  ) %>%
+  mutate(across(c(matches("ment")), as.numeric)) %>%
+  mutate(ment_trt_yn2 = ifelse(
+    ment_healer_yn == 1 | ment_inpatient_yn == 1 | ment_outpatient_yn == 1 |
+      ment_med_yn == 1,
+    1, ifelse(
+      ment_healer_yn == 99 &
+        ment_inpatient_yn == 99 &
+        ment_outpatient_yn == 99 &
+        ment_med_yn == 99, 99, 0
+    )
+  )) %>%
+  filter(ment_trt_yn != ment_trt_yn2) %>%
+  write.csv(
+    "data-check/mental-health-treatment-inconsistencies.csv",
+    row.names = FALSE
+  )
+
+# adverse event data check
+adv_events <- df %>%
+  filter(
+    grepl("adverse_event", redcap_event_name)
+  ) %>%
+  dplyr::select(
+    record_id,
+    starts_with("imp_")
+  )
+
+write.csv(adv_events, "data-check/adverse-events.csv", row.names = FALSE)
+
+# height data check
+df %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    redcap_repeat_instance,
+    redcap_data_access_group,
+    ce_height_nr
+  ) %>%
+  filter(ce_height_nr < 99) %>%
+  write.csv("data-check/height-in-m.csv", row.names = FALSE)
 
 # preprocessing
 df_prep <- df %>%
+  filter(is.na(redcap_repeat_instance)) %>%
   dplyr::select(
     record_id, # ID
     redcap_event_name, # time of visit
     redcap_data_access_group, # site
     ce_completion_date, # date of visit
     age, # demographics
-    gender, # female is 2
+    dem_sex, # female is 2
     hiv_test_result, # 1 is positive
     ic1, ic2, ic3, ic4, ic5, ic6, ic7, # inclusion criteria
     mb_xpert_t1_rifresist, mb_drug_rif, # drug resistance
+    tbd_pat_cat, # relapse or new tb case
     starts_with("sf_"), # SF12 quesstionnaire
     intersect(starts_with("as_"), ends_with("_yn")), # ASSIST questionnaire
     smwt_distance_nr, # 6-min walking test
@@ -29,18 +84,37 @@ df_prep <- df %>%
     xr_cavitation_yn, # cavitation
     xr_opacity_percentage_nr, # opacity percentage
     starts_with("phq_"), # PHQ-9 questionnaire
-    tbh_tbtreat_outcome # tb treatment outcome
+    tbh_tbtreat_outcome, # tb treatment outcome
+    ment_trt_yn, # mental health treatment
+    ment_healer_yn,
+    ment_inpatient_yn,
+    ment_outpatient_yn,
+    ment_med_yn,
+    ce_cough_blood_yn, # TB symptom score
+    ce_cough_yn,
+    ce_chestpain_yn,
+    ce_dyspnea_yn,
+    ce_temp_nr,
+    ce_heart_rate_nr,
+    ce_crackles,
+    ce_wheezing,
+    ce_lung_sounds,
+    ce_weight_nr,
+    ce_height_nr,
+    as_alc_calc, # ASSIST questionnaire
+    as_tabacco_calc,
   ) %>%
   # rename variables
   rename(
     date_visit = ce_completion_date,
     time = redcap_event_name,
     site = redcap_data_access_group,
-    sex = gender,
+    sex = dem_sex,
     hiv = hiv_test_result,
     smwt_dist = smwt_distance_nr,
     stst_nr = fa_sit_to_stand_nr,
-    opacity = xr_opacity_percentage_nr
+    opacity = xr_opacity_percentage_nr,
+    as_tobacco_calc = as_tabacco_calc
   ) %>%
   # filter baseline and end of treatment
   mutate(
@@ -50,9 +124,7 @@ df_prep <- df %>%
   ) %>%
   filter(is_start | is_end | is_post) %>%
   mutate(
-    time = ifelse(is_start, "Start", ifelse(is_end, "End", "Post")),
-    time = paste(time, "treatment"),
-    time = factor(time, levels = paste(c("Start", "End", "Post"), "treatment"))
+    time = ifelse(is_start, "Start", ifelse(is_end, "End", "Post"))
   ) %>%
   # filter >15years old
   group_by(record_id) %>%
@@ -78,12 +150,18 @@ df_prep <- df %>%
     cavity = ifelse(is.na(cavity), 0, cavity),
     clindiag = ifelse(ic4 == 1 | ic5 == 5 | ic6 == 1 | ic7 == 1, 0, 1),
     clindiag = ifelse(is.na(clindiag), 1, clindiag),
+    tbd_pat_cat = ifelse(tbd_pat_cat == 1, 0, 1), # 0: new, 1: relapse
+    tbd_pat_cat = ifelse(is.na(tbd_pat_cat), 0, tbd_pat_cat),
     opacity = ifelse(is.na(opacity), 0, opacity),
     opacity = ifelse(opacity > 60, 1, 0),
     treat_success =
       ifelse(tbh_tbtreat_outcome %in% c(1, 2), 1,
         ifelse(tbh_tbtreat_outcome == 3, 0, NA)
       ),
+    # physical variables
+    smwt_dist = ifelse(smwt_dist == 999, NA, smwt_dist),
+    stst_nr = ifelse(stst_nr == 999, NA, stst_nr),
+    stst_nr = ifelse(stst_nr > 100, NA, stst_nr),
     # recoding SF-12 quesstionnaire
     across(c(sf_moderate_act, sf_stairs), ~ ifelse(.x == 0, 3, .x)),
     across(
@@ -169,24 +247,246 @@ df_prep <- df %>%
       + phq_restless_yn + phq_suicidal_yn,
     phq9_score = ifelse(is.na(phq_date), NA, phq9_score)
   ) %>%
+  # mental health treatment
+  mutate(
+    ment_trt_yn = ifelse(
+      ment_trt_yn == 1 |
+        ment_healer_yn == 1 |
+        ment_inpatient_yn == 1 |
+        ment_outpatient_yn == 1 |
+        ment_med_yn == 1,
+      1, 0
+    ),
+    ment_trt_yn = ifelse(is.na(ment_trt_yn), 0, ment_trt_yn)
+  ) %>%
+  # TB symptom score
+  mutate(
+    across(
+      c(
+        ce_heart_rate_nr, ce_temp_nr, ce_weight_nr, ce_height_nr,
+        ce_cough_blood_yn, ce_cough_yn, ce_chestpain_yn, ce_dyspnea_yn,
+        ce_crackles, ce_wheezing, ce_lung_sounds
+      ),
+      ~ ifelse(.x == 99 | .x == 999 | .x == 9999, NA, .x)
+    ),
+    tachycardia = ifelse(ce_heart_rate_nr > 90, 1, 0),
+    auscultation = ifelse(
+      ce_crackles == 1 | ce_wheezing == 1 | ce_lung_sounds == 1, 1, 0
+    ),
+    high_temp = ifelse(ce_temp_nr > 37, 1, 0),
+    ce_height_nr = ifelse(ce_height_nr > 1000, ce_height_nr / 1000,
+      ifelse(ce_height_nr > 100, ce_height_nr / 100,
+        ifelse(ce_height_nr > 10, ce_height_nr / 10, ce_height_nr)
+      )
+    ),
+    bmi = ce_weight_nr / (ce_height_nr^2),
+    bmi16 = ifelse(bmi < 16, 1, 0),
+    bmi18 = ifelse(bmi < 18, 1, 0),
+    tb_symp_score = ce_cough_blood_yn + ce_cough_yn +
+      ce_chestpain_yn + ce_dyspnea_yn + high_temp +
+      tachycardia + auscultation + bmi16 + bmi18
+  ) %>%
   dplyr::select(
-    record_id, time, date_visit, site, age, sex,
-    hiv, mdr, highbact, cavity, clindiag, opacity,
+    record_id, time, date_visit, site, age, sex, bmi,
+    hiv, mdr, highbact, cavity, clindiag, opacity, tbd_pat_cat,
+    as_alc_calc, as_tobacco_calc,
     sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score,
-    treat_success
+    tb_symp_score,
+    ce_cough_blood_yn, ce_cough_yn,
+    ce_chestpain_yn, ce_dyspnea_yn,
+    treat_success, ment_trt_yn
   ) %>%
   mutate(across(
     c(age, hiv, mdr, highbact, cavity, clindiag, opacity),
-    ~ ifelse(time %in% c("End treatment", "Post treatment"), NA, .x)
-  )) %>%
-  # cutoffs
+    ~ ifelse(time %in% c("End", "Post"), NA, .x)
+  ))
+
+# add st george score (format data and then compute score in excel file)
+sgrq <- df %>%
+  filter(is.na(redcap_repeat_instance)) %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    starts_with("sgrq_")
+  ) %>%
   mutate(
-    phq9_score_bin = ifelse(phq9_score > 10, 1, 0),
-    sf12_phys_bin = ifelse(sf12_phys < 50, 1, 0),
-    sf12_ment_bin = ifelse(sf12_ment < 42, 1, 0),
-    smwt_dist_bin = ifelse(smwt_dist < 400, 1, 0),
-    stst_nr_bin = ifelse(stst_nr < 20, 1, 0)
+    `1a` = ifelse(sgrq_q1_cough == 0, 1, 0),
+    `1b` = ifelse(sgrq_q1_cough == 1, 1, 0),
+    `1c` = ifelse(sgrq_q1_cough == 2, 1, 0),
+    `1d` = ifelse(sgrq_q1_cough == 3, 1, 0),
+    `1e` = ifelse(sgrq_q1_cough == 4, 1, 0),
+    `2a` = ifelse(sgrq_q1_sputum == 0, 1, 0),
+    `2b` = ifelse(sgrq_q1_sputum == 1, 1, 0),
+    `2c` = ifelse(sgrq_q1_sputum == 2, 1, 0),
+    `2d` = ifelse(sgrq_q1_sputum == 3, 1, 0),
+    `2e` = ifelse(sgrq_q1_sputum == 4, 1, 0),
+    `3a` = ifelse(sgrq_q1_breath == 0, 1, 0),
+    `3b` = ifelse(sgrq_q1_breath == 1, 1, 0),
+    `3c` = ifelse(sgrq_q1_breath == 2, 1, 0),
+    `3d` = ifelse(sgrq_q1_breath == 3, 1, 0),
+    `3e` = ifelse(sgrq_q1_breath == 4, 1, 0),
+    `4a` = ifelse(sgrq_q1_attacks == 0, 1, 0),
+    `4b` = ifelse(sgrq_q1_attacks == 1, 1, 0),
+    `4c` = ifelse(sgrq_q1_attacks == 2, 1, 0),
+    `4d` = ifelse(sgrq_q1_attacks == 3, 1, 0),
+    `4e` = ifelse(sgrq_q1_attacks == 4, 1, 0),
+    `5a` = ifelse(sgrq_attacks == 0, 1, 0),
+    `5b` = ifelse(sgrq_attacks == 1, 1, 0),
+    `5c` = ifelse(sgrq_attacks == 2, 1, 0),
+    `5d` = ifelse(sgrq_attacks == 3, 1, 0),
+    `5e` = ifelse(sgrq_attacks == 4, 1, 0),
+    `6a` = ifelse(sgrq_attack_duration == 1, 1, 0),
+    `6b` = ifelse(sgrq_attack_duration == 2, 1, 0),
+    `6c` = ifelse(sgrq_attack_duration == 3, 1, 0),
+    `6d` = ifelse(sgrq_attack_duration == 4, 1, 0),
+    `7a` = ifelse(sgrq_good_days == 0, 1, 0),
+    `7b` = ifelse(sgrq_good_days == 1, 1, 0),
+    `7c` = ifelse(sgrq_good_days == 2, 1, 0),
+    `7d` = ifelse(sgrq_good_days == 3, 1, 0),
+    `7e` = ifelse(sgrq_good_days == 4, 1, 0),
+    `8` = sgrq_wheeze,
+    `9a` = ifelse(sgrq_condition == 1, 1, 0),
+    `9b` = ifelse(sgrq_condition == 2, 1, 0),
+    `9c` = ifelse(sgrq_condition == 3, 1, 0),
+    `9d` = ifelse(sgrq_condition == 4, 1, 0),
+    `10a` = ifelse(sgrq_employment == 1, 1, 0),
+    `10b` = ifelse(sgrq_employment == 2, 1, 0),
+    `10c` = ifelse(sgrq_employment == 3, 1, 0),
+    `11a` = `sgrq_breathless_act___1`,
+    `11b` = `sgrq_breathless_act___2`,
+    `11c` = `sgrq_breathless_act___3`,
+    `11d` = `sgrq_breathless_act___4`,
+    `11e` = `sgrq_breathless_act___5`,
+    `11f` = `sgrq_breathless_act___4`,
+    `11g` = `sgrq_breathless_act___5`,
+    `12a` = `sgrq_breathless_cough___1`,
+    `12b` = `sgrq_breathless_cough___2`,
+    `12c` = `sgrq_breathless_cough___3`,
+    `12d` = `sgrq_breathless_cough___4`,
+    `12e` = `sgrq_breathless_cough___5`,
+    `12f` = `sgrq_breathless_cough___6`,
+    `13a` = `sgrq_effects_chest___1`,
+    `13b` = `sgrq_effects_chest___2`,
+    `13c` = `sgrq_effects_chest___3`,
+    `13d` = `sgrq_effects_chest___4`,
+    `13e` = `sgrq_effects_chest___5`,
+    `13f` = `sgrq_effects_chest___6`,
+    `13g` = `sgrq_effects_chest___7`,
+    `13h` = `sgrq_effects_chest___8`,
+    `14a` = `sgrq_meds___1`,
+    `14b` = `sgrq_meds___2`,
+    `14c` = `sgrq_meds___3`,
+    `14d` = `sgrq_meds___3`,
+    `15a` = `sgrq_activities___1`,
+    `15b` = `sgrq_activities___2`,
+    `15c` = `sgrq_activities___3`,
+    `15d` = `sgrq_activities___4`,
+    `15e` = `sgrq_activities___5`,
+    `15f` = `sgrq_activities___6`,
+    `15g` = `sgrq_activities___7`,
+    `15h` = `sgrq_activities___8`,
+    `15i` = `sgrq_activities___9`,
+    `16a` = `sgrq_effect_dailylife___1`,
+    `16b` = `sgrq_effect_dailylife___2`,
+    `16c` = `sgrq_effect_dailylife___3`,
+    `16d` = `sgrq_effect_dailylife___4`,
+    `16e` = `sgrq_effect_dailylife___5`,
+    `17a` = ifelse(sgrq_affecting_chest == 1, 1, 0),
+    `17b` = ifelse(sgrq_affecting_chest == 2, 1, 0),
+    `17c` = ifelse(sgrq_affecting_chest == 3, 1, 0),
+    `17d` = ifelse(sgrq_affecting_chest == 4, 1, 0)
+  ) %>%
+  rename(time = redcap_event_name) %>%
+  mutate(
+    is_start = grepl("baseline", time),
+    is_end = grepl("end_of_tx", time),
+    is_post = grepl("6m_post_tx", time)
+  ) %>%
+  filter(is_start | is_end | is_post) %>%
+  mutate(
+    time = ifelse(is_start, "Start", ifelse(is_end, "End", "Post"))
+  ) %>%
+  dplyr::select(
+    record_id,
+    time,
+    sgrq_date_2,
+    matches("^\\d")
   )
+
+writexl::write_xlsx(
+  sgrq %>% dplyr::select(record_id, matches("^\\d")),
+  "preprocessing/sgrq-data.xlsx"
+)
+
+sgrq_tot_score <- sgrq %>%
+  mutate(
+    sgrq_tot_score = readxl::read_xlsx("preprocessing/sgrq-data-result.xlsx")$sgrq_tot_score
+  ) %>%
+  mutate(
+    sgrq_tot_score = ifelse(sgrq_tot_score == "MISSING", NA, sgrq_tot_score),
+    sgrq_tot_score = as.numeric(sgrq_tot_score)
+  ) %>%
+  dplyr::select(record_id, time, sgrq_date_2, sgrq_tot_score)
+
+df_prep <- left_join(
+  df_prep,
+  sgrq_tot_score,
+  by = c("record_id", "time")
+)
+
+# add non-fatal (nf) adverse events (ae)
+adv_events <- df %>%
+  filter(
+    grepl("adverse_event", redcap_event_name)
+  ) %>%
+  dplyr::select(
+    record_id,
+    starts_with("imp_")
+  ) %>%
+  mutate(
+    is_ae = imp_ae_serious___1 == 1 |
+      imp_ae_serious___2 == 1 |
+      imp_ae_serious___3 == 1 |
+      imp_ae_serious___4 == 1 |
+      imp_ae_serious___5 == 1 |
+      imp_ae_serious___88 == 1,
+    is_nf_ae = ifelse(is_ae, ifelse(imp_death_date == "", 1, 0), 0)
+  ) %>%
+  filter(is_nf_ae == 1)
+
+sprintf(
+  "Adverse events in entire data: %i",
+  nrow(adv_events)
+)
+
+df_prep <- df_prep %>%
+  left_join(
+    adv_events %>%
+      dplyr::select(record_id, is_nf_ae, imp_onset_date) %>%
+      rename(nf_ae = is_nf_ae, nf_ae_date = imp_onset_date),
+    by = "record_id"
+  ) %>%
+  group_by(record_id) %>%
+  fill(nf_ae, nf_ae_date, .direction = "downup") %>%
+  ungroup() %>%
+  mutate(
+    nf_ae = ifelse(is.na(nf_ae), 0, nf_ae)
+  )
+
+df_prep %>%
+  group_by(record_id) %>%
+  filter(any(nf_ae == 1)) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id, time, date_visit,
+    nf_ae_date
+  ) %>%
+  arrange(record_id) %>%
+  write.csv(
+    "data-check/nonfatal-adverse-events-records.csv",
+    row.names = FALSE
+  )
+
 
 # full data
 df_full <- expand.grid(
@@ -198,7 +498,7 @@ df_full <- expand.grid(
   fill(
     site, age, sex, hiv, mdr,
     highbact, clindiag, cavity, opacity,
-    treat_success,
+    treat_success, ment_trt_yn,
     .direction = "downup"
   ) %>%
   ungroup()
@@ -216,7 +516,7 @@ df %>%
     death_yn == 1
   ) %>%
   write.csv(
-    "results/death-records.csv",
+    "data-check/death-records.csv",
     row.names = FALSE
   )
 
@@ -233,7 +533,7 @@ df_full <- df_full %>%
   left_join(df_death, by = "record_id") %>%
   mutate(
     death = ifelse(is.na(death), FALSE, death),
-    death = ifelse(time == "Start treatment", FALSE, death)
+    death = ifelse(time == "Start", FALSE, death)
   )
 
 k_deaths <- df_full %>%
@@ -256,32 +556,35 @@ print(
 #' if that was already the case at end of treatment.
 #' If death, then impute with worst outcomes.
 
-file_date_chr <- stringi::stri_extract(file_name, regex = "\\d{8}")
-current_date <- as.Date(file_date_chr, format = "%d%m%Y")
+file_date_chr <- stringi::stri_extract(file_name, regex = "\\d{4}-\\d{2}-\\d{2}")
+current_date <- as.Date(file_date_chr, format = "%Y-%m-%d")
 waiting_time <- 8 * 30
 
 
 df_full <- df_full %>%
+  mutate(time = factor(time, levels = c("Start", "End", "Post"))) %>%
+  mutate(date_visit = as.Date(date_visit)) %>%
   group_by(record_id) %>%
   arrange(time) %>%
   mutate(
     ana = is.na(phq9_score) + is.na(sf12_ment) + is.na(sf12_phys) +
-      is.na(smwt_dist) + is.na(stst_nr) == 5,
+      is.na(smwt_dist) + is.na(stst_nr) +
+      is.na(sgrq_tot_score) + is.na(tb_symp_score) == 7,
     dslv = as.numeric(current_date - lag(date_visit), "days"),
-    ltfu =
-      ifelse(time == "Start treatment" | !is.na(date_visit) | !ana, FALSE, NA),
-    ltfu =
-      ifelse(!is.na(ltfu), ltfu,
+    mfu =
+      ifelse(time == "Start" | !is.na(date_visit) | !ana, FALSE, NA),
+    mfu =
+      ifelse(!is.na(mfu), mfu,
         ifelse(dslv > waiting_time, TRUE, NA)
       ),
-    ltfu =
-      ifelse(!is.na(ltfu), ltfu,
-        ifelse(time %in% c("End treatment", "Post treatment"),
-          ifelse(lag(ltfu), TRUE, NA), NA
+    mfu =
+      ifelse(!is.na(mfu), mfu,
+        ifelse(time %in% c("End", "Post"),
+          ifelse(lag(mfu), TRUE, NA), NA
         )
       ),
     death = ifelse(!ana, FALSE, death),
-    ltfu = ifelse(death, FALSE, ltfu),
+    mfu = ifelse(death, FALSE, mfu),
     treat_success = ifelse(death, 0, treat_success),
   ) %>%
   ungroup() %>%
@@ -292,12 +595,11 @@ df_full <- df_full %>%
   filter(cum_death < 2) %>%
   dplyr::select(-cum_death)
 
-table(df_full$ltfu, df_full$death, useNA = "always")
+table(df_full$mfu, df_full$death, useNA = "always")
 
 # inclusion: complete case data including loss to follow-up
 df_cc <- df_full %>%
-  filter(!is.na(ltfu))
-
+  filter(!is.na(mfu))
 
 n <- nrow(df_full)
 k_incl <- nrow(df_cc)
@@ -311,24 +613,24 @@ print(sprintf(
 ))
 
 # lost to follow-up
-k_ltfu <- df_full %>%
-  filter(ltfu) %>%
+k_mfu <- df_full %>%
+  filter(mfu) %>%
   nrow()
-k_pat_ltfu <- df_full %>%
-  filter(ltfu) %>%
+k_pat_mfu <- df_full %>%
+  filter(mfu) %>%
   dplyr::select(record_id) %>%
   unlist() %>%
   n_distinct()
 
 print(sprintf(
-  "LTFU w/o deaths: %i (%i percent of patients, %i percent of complete data)",
-  k_pat_ltfu,
-  round(k_pat_ltfu / k_pat_incl * 100),
-  round(k_ltfu / k_incl * 100)
+  "MFU w/o deaths: %i (%i percent of patients, %i percent of complete data)",
+  k_pat_mfu,
+  round(k_pat_mfu / k_pat_incl * 100),
+  round(k_mfu / k_incl * 100)
 ))
 
 # visit date date but missing information
-strange <- filter(df_full, !ltfu, ana, !is.na(date_visit), death == 0)
+strange <- filter(df_full, !mfu, ana, !is.na(date_visit), death == 0)
 k_strange <- nrow(strange)
 
 print(sprintf(
@@ -340,7 +642,7 @@ print(sprintf(
 # exclusion
 k_excl_end <- df_full %>%
   group_by(record_id) %>%
-  filter(time == "End treatment", is.na(ltfu), death == 0) %>%
+  filter(time == "End", is.na(mfu), death == 0) %>%
   ungroup() %>%
   nrow()
 
@@ -353,7 +655,7 @@ print(
 
 k_excl_post <- df_full %>%
   group_by(record_id) %>%
-  filter(time == "Post treatment", is.na(ltfu), death == 0) %>%
+  filter(time == "Post", is.na(mfu), death == 0) %>%
   ungroup() %>%
   nrow()
 
@@ -364,4 +666,5 @@ print(
   )
 )
 
+# save data
 saveRDS(df_cc, "data-clean/phys-ment-data.rds")
