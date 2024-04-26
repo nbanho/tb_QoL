@@ -1,66 +1,13 @@
 #### Libraries ####
 
 library(tidyverse)
-
+library(lubridate)
 
 #### Data ####
 
 # raw data
 file_name <- "data-raw/1734TuberculosisPati_DATA_2024-04-05_1403.csv"
 df <- read.csv(file_name)
-
-# mental health data check
-df %>%
-  dplyr::select(
-    record_id,
-    redcap_event_name,
-    redcap_data_access_group,
-    ment_trt_yn,
-    ment_healer_yn,
-    ment_inpatient_yn,
-    ment_outpatient_yn,
-    ment_med_yn
-  ) %>%
-  mutate(across(c(matches("ment")), as.numeric)) %>%
-  mutate(ment_trt_yn2 = ifelse(
-    ment_healer_yn == 1 | ment_inpatient_yn == 1 | ment_outpatient_yn == 1 |
-      ment_med_yn == 1,
-    1, ifelse(
-      ment_healer_yn == 99 &
-        ment_inpatient_yn == 99 &
-        ment_outpatient_yn == 99 &
-        ment_med_yn == 99, 99, 0
-    )
-  )) %>%
-  filter(ment_trt_yn != ment_trt_yn2) %>%
-  write.csv(
-    "data-check/mental-health-treatment-inconsistencies.csv",
-    row.names = FALSE
-  )
-
-# adverse event data check
-adv_events <- df %>%
-  filter(
-    grepl("adverse_event", redcap_event_name)
-  ) %>%
-  dplyr::select(
-    record_id,
-    starts_with("imp_")
-  )
-
-write.csv(adv_events, "data-check/adverse-events.csv", row.names = FALSE)
-
-# height data check
-df %>%
-  dplyr::select(
-    record_id,
-    redcap_event_name,
-    redcap_repeat_instance,
-    redcap_data_access_group,
-    ce_height_nr
-  ) %>%
-  filter(ce_height_nr < 99) %>%
-  write.csv("data-check/height-in-m.csv", row.names = FALSE)
 
 # preprocessing
 df_prep <- df %>%
@@ -84,7 +31,7 @@ df_prep <- df %>%
     xr_cavitation_yn, # cavitation
     xr_opacity_percentage_nr, # opacity percentage
     starts_with("phq_"), # PHQ-9 questionnaire
-    tbh_tbtreat_outcome, # tb treatment outcome
+    eot_outcome, # tb treatment outcome
     ment_trt_yn, # mental health treatment
     ment_healer_yn,
     ment_inpatient_yn,
@@ -155,8 +102,8 @@ df_prep <- df %>%
     opacity = ifelse(is.na(opacity), 0, opacity),
     opacity = ifelse(opacity > 60, 1, 0),
     treat_success =
-      ifelse(tbh_tbtreat_outcome %in% c(1, 2), 1,
-        ifelse(tbh_tbtreat_outcome == 3, 0, NA)
+      ifelse(eot_outcome <= 2, 1,
+        ifelse(eot_outcome <= 4, 0, NA)
       ),
     # physical variables
     smwt_dist = ifelse(smwt_dist == 999, NA, smwt_dist),
@@ -294,12 +241,43 @@ df_prep <- df %>%
     tb_symp_score,
     ce_cough_blood_yn, ce_cough_yn,
     ce_chestpain_yn, ce_dyspnea_yn,
-    treat_success, ment_trt_yn
+    eot_outcome, treat_success, ment_trt_yn
   ) %>%
   mutate(across(
-    c(age, hiv, mdr, highbact, cavity, clindiag, opacity),
+    c(
+      age, sex, hiv,
+      mdr, highbact, cavity, opacity,
+      clindiag, tbd_pat_cat
+    ),
     ~ ifelse(time %in% c("End", "Post"), NA, .x)
-  ))
+  )) %>%
+  # if date_visit we impute as +/- 6 months of previous/next visit
+  # there are a few patients without any date_visit, which are left NA
+  # luckily these are all patients with only one visit,
+  # so there are no adverse events we could miss for them
+  mutate(
+    time = factor(time, levels = c("Start", "End", "Post")),
+    date_visit = as.Date(date_visit),
+    date_visit_origin = date_visit
+  ) %>%
+  group_by(record_id) %>%
+  arrange(time) %>%
+  mutate(
+    date_visit = ifelse(
+      is.na(date_visit),
+      ifelse(!is.na(lag(date_visit)),
+        as.character(lag(date_visit) %m+% months(6)),
+        ifelse(!is.na(lead(date_visit)),
+          as.character(lead(date_visit) %m-% months(6)),
+          NA
+        )
+      ),
+      as.character(date_visit)
+    ),
+    date_visit = as.Date(date_visit)
+  ) %>%
+  ungroup()
+
 
 # add st george score (format data and then compute score in excel file)
 sgrq <- df %>%
@@ -430,9 +408,27 @@ sgrq_tot_score <- sgrq %>%
 
 df_prep <- left_join(
   df_prep,
-  sgrq_tot_score,
+  sgrq_tot_score %>%
+    mutate(time = factor(time, levels = c("Start", "End", "Post"))),
   by = c("record_id", "time")
 )
+
+# full data
+df_full <- expand.grid(
+  record_id = unique(df_prep$record_id),
+  time = unique(df_prep$time)
+) %>%
+  left_join(df_prep, by = c("record_id", "time")) %>%
+  group_by(record_id) %>%
+  fill(
+    site,
+    age, sex, hiv,
+    mdr, highbact, cavity, opacity,
+    clindiag, tbd_pat_cat,
+    eot_outcome, treat_success,
+    .direction = "downup"
+  ) %>%
+  ungroup()
 
 # add non-fatal (nf) adverse events (ae)
 adv_events <- df %>%
@@ -455,71 +451,74 @@ adv_events <- df %>%
   filter(is_nf_ae == 1)
 
 sprintf(
-  "Adverse events in entire data: %i",
-  nrow(adv_events)
+  "Adverse events in entire data: %i in %i patients",
+  nrow(adv_events), n_distinct(adv_events$record_id)
 )
 
-df_prep <- df_prep %>%
+sprintf(
+  "IDs with AE but no entry in database: %s",
+  paste(setdiff(adv_events$record_id, df_full$record_id), collapse = ", ")
+)
+
+# if AE before baseline visit, code it as during treatment (Zimbabwe)
+# if AE date is missing, code it as during treatment (two cases)
+# if AE is missing because date_visit is missing, code it as no AE
+# as these are all patients who only had a baseline visit
+
+df_full <- df_full %>%
   left_join(
     adv_events %>%
-      dplyr::select(record_id, is_nf_ae, imp_onset_date) %>%
-      rename(nf_ae = is_nf_ae, nf_ae_date = imp_onset_date),
+      dplyr::select(record_id, imp_onset_date, is_nf_ae) %>%
+      rename(nf_ae_date = imp_onset_date),
     by = "record_id"
   ) %>%
   group_by(record_id) %>%
-  fill(nf_ae, nf_ae_date, .direction = "downup") %>%
+  arrange(time) %>%
+  mutate(
+    date_visit_exp = ifelse(
+      is.na(date_visit),
+      ifelse(!is.na(lag(date_visit)),
+        as.character(lag(date_visit) %m+% months(6)),
+        ifelse(!is.na(lead(date_visit)),
+          as.character(lead(date_visit) %m-% months(6)),
+          ifelse(!is.na(lag(date_visit, 2)),
+            as.character(lag(date_visit, 2) %m+% months(12)),
+            NA
+          )
+        )
+      ),
+      as.character(date_visit)
+    ),
+    date_visit_exp = as.Date(date_visit_exp)
+  ) %>%
+  mutate(
+    nf_ae_date = as.Date(nf_ae_date),
+    nf_ae_date = ifelse(
+      is_nf_ae == 1 & is.na(nf_ae_date),
+      as.character(date_visit_exp[time == "End"]),
+      as.character(nf_ae_date)
+    ),
+    nf_ae_date = as.Date(nf_ae_date)
+  ) %>%
+  mutate(
+    nf_ae = ifelse(is.na(nf_ae_date), 0,
+      ifelse(nf_ae_date <= date_visit_exp, 1, 0)
+    ),
+    nf_ae = ifelse(is.na(nf_ae), 0, nf_ae),
+    nf_ae = ifelse(time == "Start", 0,
+      ifelse(time == "Post", ifelse(nf_ae[time == "Post"] == 1, 0, nf_ae),
+        nf_ae
+      )
+    )
+  ) %>%
   ungroup() %>%
   mutate(
-    nf_ae = ifelse(is.na(nf_ae), 0, nf_ae)
-  )
-
-df_prep %>%
-  group_by(record_id) %>%
-  filter(any(nf_ae == 1)) %>%
-  ungroup() %>%
-  dplyr::select(
-    record_id, time, date_visit,
-    nf_ae_date
+    nf_ae_date = ifelse(nf_ae == 1, as.character(nf_ae_date), NA),
+    nf_ae_date = as.Date(nf_ae_date)
   ) %>%
-  arrange(record_id) %>%
-  write.csv(
-    "data-check/nonfatal-adverse-events-records.csv",
-    row.names = FALSE
-  )
-
-
-# full data
-df_full <- expand.grid(
-  record_id = unique(df_prep$record_id),
-  time = unique(df_prep$time)
-) %>%
-  left_join(df_prep, by = c("record_id", "time")) %>%
-  group_by(record_id) %>%
-  fill(
-    site, age, sex, hiv, mdr,
-    highbact, clindiag, cavity, opacity,
-    treat_success, ment_trt_yn,
-    .direction = "downup"
-  ) %>%
-  ungroup()
+  dplyr::select(-is_nf_ae)
 
 # add deaths
-df %>%
-  dplyr::select(
-    record_id,
-    redcap_event_name,
-    redcap_data_access_group,
-    death_yn,
-    eot_outcome
-  ) %>%
-  filter(
-    death_yn == 1
-  ) %>%
-  write.csv(
-    "data-check/death-records.csv",
-    row.names = FALSE
-  )
-
 df_death <- df %>%
   rename(death = death_yn) %>%
   dplyr::select(record_id, death) %>%
@@ -556,14 +555,16 @@ print(
 #' if that was already the case at end of treatment.
 #' If death, then impute with worst outcomes.
 
-file_date_chr <- stringi::stri_extract(file_name, regex = "\\d{4}-\\d{2}-\\d{2}")
+file_date_chr <- stringi::stri_extract(
+  file_name,
+  regex = "\\d{4}-\\d{2}-\\d{2}"
+)
 current_date <- as.Date(file_date_chr, format = "%Y-%m-%d")
 waiting_time <- 8 * 30
 
 
 df_full <- df_full %>%
   mutate(time = factor(time, levels = c("Start", "End", "Post"))) %>%
-  mutate(date_visit = as.Date(date_visit)) %>%
   group_by(record_id) %>%
   arrange(time) %>%
   mutate(

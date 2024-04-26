@@ -7,6 +7,9 @@ doc/
 *.DS_Store
 _old/
 fitted-models/*
+*.csv
+*.xls
+*.xlsx
 
 # History files
 .Rhistory

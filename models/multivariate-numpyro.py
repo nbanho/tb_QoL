@@ -44,16 +44,19 @@ for i in range(1, num_files + 1):
         predictors = jnp.array(predictors)
         outcomes = jnp.array(outcomes)
 
+        # prior for intercepts
+        intercepts = numpyro.sample('intercepts', dist.Normal(jnp.zeros(outcomes.shape[1]), 1.))
+
         # Priors for predictors
         betas = numpyro.sample('betas', dist.Normal(jnp.zeros((outcomes.shape[1], predictors.shape[1])), std_betas))
-        
+
         # LKJ prior for the correlation matrix
         L_Omega = numpyro.sample('L_Omega', dist.LKJCholesky(outcomes.shape[1], concentration=1.))
         Sigma = numpyro.sample('Sigma', dist.HalfNormal(1.), sample_shape=(outcomes.shape[1],))
         scale_tril = jnp.matmul(jnp.sqrt(jnp.diag(Sigma)), L_Omega)  # Cholesky factor of the covariance matrix
         
         # Likelihood
-        mu = jnp.einsum('ij,kj->ki', betas, predictors)
+        mu = jnp.einsum('ij,kj->ki', betas, predictors) + intercepts
         with numpyro.plate('data', len(outcomes)):
             numpyro.sample('obs', dist.MultivariateNormal(mu, scale_tril=scale_tril), obs=outcomes)
 
