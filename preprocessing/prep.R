@@ -31,7 +31,6 @@ df_prep <- df %>%
     xr_cavitation_yn, # cavitation
     xr_opacity_percentage_nr, # opacity percentage
     starts_with("phq_"), # PHQ-9 questionnaire
-    eot_outcome, # tb treatment outcome
     ment_trt_yn, # mental health treatment
     ment_healer_yn,
     ment_inpatient_yn,
@@ -101,10 +100,6 @@ df_prep <- df %>%
     tbd_pat_cat = ifelse(is.na(tbd_pat_cat), 0, tbd_pat_cat),
     opacity = ifelse(is.na(opacity), 0, opacity),
     opacity = ifelse(opacity > 60, 1, 0),
-    treat_success =
-      ifelse(eot_outcome <= 2, 1,
-        ifelse(eot_outcome <= 4, 0, NA)
-      ),
     # physical variables
     smwt_dist = ifelse(smwt_dist == 999, NA, smwt_dist),
     stst_nr = ifelse(stst_nr == 999, NA, stst_nr),
@@ -241,7 +236,7 @@ df_prep <- df %>%
     tb_symp_score,
     ce_cough_blood_yn, ce_cough_yn,
     ce_chestpain_yn, ce_dyspnea_yn,
-    eot_outcome, treat_success, ment_trt_yn
+    ment_trt_yn
   ) %>%
   mutate(across(
     c(
@@ -398,7 +393,9 @@ writexl::write_xlsx(
 
 sgrq_tot_score <- sgrq %>%
   mutate(
-    sgrq_tot_score = readxl::read_xlsx("preprocessing/sgrq-data-result.xlsx")$sgrq_tot_score
+    sgrq_tot_score = readxl::read_xlsx(
+      "preprocessing/sgrq-data-result.xlsx"
+    )$sgrq_tot_score
   ) %>%
   mutate(
     sgrq_tot_score = ifelse(sgrq_tot_score == "MISSING", NA, sgrq_tot_score),
@@ -425,10 +422,34 @@ df_full <- expand.grid(
     age, sex, hiv,
     mdr, highbact, cavity, opacity,
     clindiag, tbd_pat_cat,
-    eot_outcome, treat_success,
     .direction = "downup"
   ) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(time = factor(time, levels = c("Start", "End", "Post")))
+
+# add TB treatment outcome
+trt_out <- df %>%
+  group_by(record_id) %>%
+  summarise(
+    eot_outcome = ifelse(
+      all(is.na(eot_outcome)), NA,
+      mean(eot_outcome, na.rm = TRUE)
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    treat_success =
+      ifelse(eot_outcome <= 2, 1,
+        ifelse(eot_outcome <= 4, 0, NA)
+      )
+  ) %>%
+  mutate(
+    time = "End",
+    time = factor(time, levels = c("Start", "End", "Post"))
+  )
+
+df_full <- df_full %>%
+  left_join(trt_out, by = c("record_id", "time"))
 
 # add non-fatal (nf) adverse events (ae)
 adv_events <- df %>%
@@ -506,7 +527,7 @@ df_full <- df_full %>%
     ),
     nf_ae = ifelse(is.na(nf_ae), 0, nf_ae),
     nf_ae = ifelse(time == "Start", 0,
-      ifelse(time == "Post", ifelse(nf_ae[time == "Post"] == 1, 0, nf_ae),
+      ifelse(time == "Post", ifelse(nf_ae[time == "End"] == 1, 0, nf_ae),
         nf_ae
       )
     )
