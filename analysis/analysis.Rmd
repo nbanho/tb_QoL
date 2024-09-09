@@ -514,9 +514,10 @@ save_plot(
 )
 ```
 
-**Figure**: Pairwise correlations between QoL outcomes overall and by time.
+**Figure**: Pairwise correlations between QoL outcomes. Stars indicate significance levels: p < 0.05 (\*), p < 0.01 (\*\*), p < 0.001 (\*\*\*).
 
-```{r pairwise-correlation, fig.width=10, fig.height=10}
+```{r pairwise-correlation, fig.width=7, fig.height=7}
+# correlations
 cor <- qol %>%
   dplyr::select(all_of(names(outcome_cont))) %>%
   mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
@@ -537,6 +538,39 @@ cor_post <- qol %>%
   mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
   cor(use = "pairwise.complete.obs")
 
+# p-values
+cor_pval <- function(df) {
+  p_value_matrix <- matrix(NA, ncol(df), ncol(df))
+  rownames(p_value_matrix) <- colnames(df)
+  colnames(p_value_matrix) <- colnames(df)
+  for (i in seq_along(df)) {
+    for (j in seq_along(df)) {
+      tmp <- cor.test(df[[i]], df[[j]])
+      p_value_matrix[i, j] <- tmp$p.value
+    }
+  }
+  return(p_value_matrix)
+}
+cor_p <- qol %>%
+  dplyr::select(all_of(names(outcome_cont))) %>%
+  mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
+  cor_pval()
+cor_p_start <- qol %>%
+  filter(time == "Start") %>%
+  dplyr::select(all_of(names(outcome_cont))) %>%
+  mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
+  cor_pval()
+cor_p_end <- qol %>%
+  filter(time == "End") %>%
+  dplyr::select(all_of(names(outcome_cont))) %>%
+  mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
+  cor_pval()
+cor_p_post <- qol %>%
+  filter(time == "Post") %>%
+  dplyr::select(all_of(names(outcome_cont))) %>%
+  mutate(across(c(phq9_score, tb_symp_score, sgrq_tot_score), ~ .x * -1)) %>%
+  cor_pval()
+
 # Melt the correlation matrix into a long format
 cor_melt <- rbind(
   melt(cor) %>% mutate(time = "Overall"),
@@ -550,18 +584,88 @@ cor_melt <- rbind(
     time = factor(time, levels = c("Overall", "Start", "End", "Post"))
   )
 
-# Create the heatmap
-cor_pl <- ggplot(data = cor_melt, aes(x = Var1, y = Var2, fill = value)) +
+cor_p_melt <- rbind(
+  melt(cor_p) %>% mutate(time = "Overall"),
+  melt(cor_p_start) %>% mutate(time = "Start"),
+  melt(cor_p_end) %>% mutate(time = "End"),
+  melt(cor_p_post) %>% mutate(time = "Post")
+) %>%
+  mutate(
+    Var1 = recode(Var1, !!!outcome_cont),
+    Var2 = recode(Var2, !!!outcome_cont),
+    time = factor(time, levels = c("Overall", "Start", "End", "Post"))
+  )
+
+cor_rp_melt <- left_join(
+  cor_melt,
+  cor_p_melt,
+  by = c("Var1", "Var2", "time")
+) %>%
+  rename(value = value.x, p = value.y) %>%
+  mutate(
+    p_star = ifelse(p < .001, "***",
+      ifelse(p < .01, "**",
+        ifelse(p < .05, "*", "")
+      )
+    ),
+    lab = paste0(round(value, 2), p_star),
+    # lab = ifelse(Var1 == Var2, "", lab),
+    across(c(value, lab), ~ ifelse(as.integer(Var1) <= as.integer(Var2), NA, .x))
+  )
+
+cor_ov_pl <- ggplot(
+  data = filter(cor_rp_melt, time == "Overall"),
+  aes(x = Var1, y = Var2, fill = value)
+) +
   geom_tile() +
   geom_text(
-    aes(label = round(value, 2)),
+    aes(label = lab),
+    color = "black",
+    size = 6 / cm(1)
+  ) +
+  scale_fill_gradient2(
+    low = "blue", high = "red", mid = "white",
+    midpoint = 0, limit = c(-.1, 1), space = "Lab",
+    na.value = "grey80",
+    name = "Pearson Correlation"
+  ) +
+  theme_custom() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45, vjust = 1,
+      hjust = 1
+    ),
+    axis.title = element_blank(),
+    legend.position = "top",
+    legend.title = element_text(vjust = .9),
+    legend.key.width = unit(1.6, "cm"),
+    legend.key.height = unit(0.3, "cm")
+  ) +
+  coord_fixed()
+
+save_plot(
+  cor_ov_pl,
+  pdf_file = "results/outcome-overall-correlation.png",
+  w = 12, h = 12
+)
+```
+
+**Figure**: Pairwise correlations between QoL outcomes by time. Stars indicate significance levels: p < 0.05 (\*), p < 0.01 (\*\*), p < 0.001 (\*\*\*).
+
+```{r correlation-overall, fig.width=10, fig.height=10}
+# Create the heatmap
+cor_pl <- ggplot(data = cor_rp_melt, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  geom_text(
+    aes(label = lab),
     color = "black",
     size = 6 / cm(1)
   ) +
   facet_wrap(~time) +
   scale_fill_gradient2(
     low = "blue", high = "red", mid = "white",
-    midpoint = 0, limit = c(-1, 1), space = "Lab",
+    midpoint = 0, limit = c(-.1, 1), space = "Lab",
+    na.value = "grey80",
     name = "Pearson Correlation"
   ) +
   theme_custom() +
@@ -581,7 +685,7 @@ cor_pl <- ggplot(data = cor_melt, aes(x = Var1, y = Var2, fill = value)) +
 save_plot(
   cor_pl,
   pdf_file = "results/outcome-correlation.png",
-  w = 16, h = 16
+  w = 12, h = 12
 )
 ```
 
@@ -1519,3 +1623,389 @@ Intepretation:
 - Prevalence of impaired QoL decreased from the start to the end of treatment for all outcomes.
 - Prevalene decreased further post treatment for physical scores and TB symptom scores.
 - Mental scores (PHQ9-S and SF12-MCS) did not decrease further, but there was only little potential for improvement because they were already low at the end of treatment. 
+
+
+### Non-improvers
+
+We are primarily interested in patients whose QoL did not improve through anti-TB treatment. 
+To investigate, we standardise each score and compute the total change between start and end and between post and end of treatment.
+PHQ9 score and TB symptom scores have been multiplied by -1 so that a negative change indicates deteroration as well. 
+We compute the total change across types of scores, i.e. mental health, physical health, and TB symptom scores.
+
+
+**Figure**: Total change in standardised scores between start and end and between post and end of anti-TB treatment.
+Dots shows the total change, stacked bars show the change for each individual score. Imputed data as has been averaged.
+
+```{r non-improvers-treatment, fig.width=6.3, fig.height=8.3}
+# compute standardised changes by score types
+total_change <- function(data, times = c("Start", "End")) {
+  qol_fu_imp %>%
+    mutate(mutate(across(c(phq9_score, sgrq_tot_score, tb_symp_score), ~ .x * (-1)))) %>%
+    mutate(across(matches(names(outcome_cont)), ~ (.x - mean(.x)) / sd(.x))) %>%
+    group_by(record_id, .imp) %>%
+    arrange(time) %>%
+    summarise(
+      across(matches(names(outcome_cont)), ~ .x[time == times[2]] - .x[time == times[1]]),
+      across(matches(names(predictor_sub)), ~ .x[time == "Start"])
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(phq9_score)) %>%
+    mutate(
+      alc_bin = ifelse(as_alc_calc > 0, "Yes", "No"),
+      tobacco_bin = ifelse(as_tobacco_calc > 0, "Yes", "No"),
+      age_bin = ifelse(age < 30, "Yes", "No"),
+      across(
+        c(names(predictor_bin_sub)),
+        ~ ifelse(.x == "Yes", 1, 0)
+      ),
+      ment_sum = phq9_score + sf12_ment,
+      phys_sum = sf12_phys + smwt_dist + stst_nr,
+      symp_sum = sgrq_tot_score + tb_symp_score,
+      qol_sum = rowSums(across(matches(names(outcome_cont))))
+    )
+}
+
+qol_fu_tc <- total_change(qol_fu_imp, c("Start", "End"))
+qol_fu_pt <- total_change(qol_fu_imp, c("End", "Post"))
+
+# compute average across imputed datasets
+qol_fu_tc_mean <- qol_fu_tc %>%
+  group_by(record_id) %>%
+  summarise(across(c(matches("_sum"), matches(names(outcome_cont))), mean)) %>%
+  ungroup()
+qol_fu_pt_mean <- qol_fu_pt %>%
+  group_by(record_id) %>%
+  summarise(across(c(matches("_sum"), matches(names(outcome_cont))), mean)) %>%
+  ungroup()
+
+# generate plots
+y_lim <- c(
+  rbind(
+    qol_fu_tc_mean %>% dplyr::select(ment_sum, phys_sum, symp_sum),
+    qol_fu_pt_mean %>% dplyr::select(ment_sum, phys_sum, symp_sum)
+  ) %>%
+    sapply(min) %>%
+    min(),
+  rbind(
+    qol_fu_tc_mean %>% dplyr::select(ment_sum, phys_sum, symp_sum),
+    qol_fu_pt_mean %>% dplyr::select(ment_sum, phys_sum, symp_sum)
+  ) %>%
+    sapply(max) %>%
+    max()
+)
+x_lab <- "Patient"
+y_lab <- "Total change in standardised scores"
+theme_adaptions <- theme(
+  legend.position = c(0.6, 0.1),
+  legend.direction = "horizontal",
+  legend.key.width = unit(0.1, "cm"),
+  legend.key.height = unit(0.2, "cm"),
+  axis.text.x = element_blank(),
+  axis.ticks.x = element_blank(),
+  legend.title = element_blank()
+)
+annotate_change_pl <- function(pl, n, N, ttl, col) {
+  p <- round(100 * (n / N))
+  x_a <- n + 0.01 * N
+  x_at <- n + 0.05 * N
+  x_b <- 0.8 * N
+  pl +
+    geom_vline(
+      aes(xintercept = n),
+      linetype = "dashed"
+    ) +
+    geom_segment(
+      aes(x = x_a, xend = x_b, y = y_lim[2] - 1.5),
+      arrow = arrow(length = unit(0.3, "cm"))
+    ) +
+    annotate("text",
+      x = x_at, y = y_lim[2] - .5,
+      label = paste0("Improvers: ", 100 - p, "%"),
+      size = 8 / cm(1), hjust = 0
+    ) +
+    labs(x = x_lab, y = y_lab, title = ttl) +
+    scale_fill_manual(values = rainbow(10)[col]) +
+    scale_y_continuous(limits = y_lim) +
+    theme_custom() +
+    theme_adaptions
+}
+
+n_ment_noni <- sum(qol_fu_tc_mean$ment_sum < 0)
+mental_health_change_pl <- qol_fu_tc_mean %>%
+  dplyr::select(record_id, ment_sum, phq9_score, sf12_ment) %>%
+  melt(c("record_id", "ment_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, ment_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = ment_sum), size = .5)
+mental_health_change_pl <- annotate_change_pl(
+  mental_health_change_pl,
+  n_ment_noni, nrow(qol_fu_tc_mean), "Mental health", 1:2
+)
+
+n_phys_noni <- sum(qol_fu_tc_mean$phys_sum < 0)
+physical_health_change_pl <- qol_fu_tc_mean %>%
+  dplyr::select(record_id, phys_sum, sf12_phys, smwt_dist, stst_nr) %>%
+  melt(c("record_id", "phys_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, phys_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = phys_sum), size = .5)
+physical_health_change_pl <- annotate_change_pl(
+  physical_health_change_pl,
+  n_phys_noni, nrow(qol_fu_tc_mean), "Physical health", c(3, 5, 7)
+)
+
+n_symp_noni <- sum(qol_fu_tc_mean$symp_sum < 0)
+symptom_change_pl <- qol_fu_tc_mean %>%
+  dplyr::select(record_id, symp_sum, sgrq_tot_score, tb_symp_score) %>%
+  melt(c("record_id", "symp_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, symp_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = symp_sum), size = .5)
+symptom_change_pl <- annotate_change_pl(
+  symptom_change_pl,
+  n_symp_noni, nrow(qol_fu_tc_mean), "Symptoms", 9:10
+)
+
+n_ment_post_noni <- sum(qol_fu_pt_mean$ment_sum < 0)
+mental_health_postchange_pl <- qol_fu_pt_mean %>%
+  dplyr::select(record_id, ment_sum, phq9_score, sf12_ment) %>%
+  melt(c("record_id", "ment_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, ment_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = ment_sum), size = .5)
+mental_health_postchange_pl <- annotate_change_pl(
+  mental_health_postchange_pl,
+  n_ment_post_noni, nrow(qol_fu_pt_mean), "Mental health", 1:2
+) +
+  theme(
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+
+n_phys_post_noni <- sum(qol_fu_pt_mean$phys_sum < 0)
+physical_health_postchange_pl <- qol_fu_pt_mean %>%
+  dplyr::select(record_id, phys_sum, sf12_phys, smwt_dist, stst_nr) %>%
+  melt(c("record_id", "phys_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, phys_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = phys_sum), size = .5)
+physical_health_postchange_pl <- annotate_change_pl(
+  physical_health_postchange_pl,
+  n_phys_noni, nrow(qol_fu_pt_mean), "Physical health", c(3, 5, 7)
+) +
+  theme(
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+
+n_symp_noni <- sum(qol_fu_pt_mean$symp_sum < 0)
+symptom_postchange_pl <- qol_fu_pt_mean %>%
+  dplyr::select(record_id, symp_sum, sgrq_tot_score, tb_symp_score) %>%
+  melt(c("record_id", "symp_sum")) %>%
+  mutate(variable = recode(variable, !!!outcome_cont)) %>%
+  ggplot(aes(x = reorder(record_id, symp_sum), y = value)) +
+  geom_bar(
+    aes(fill = variable),
+    stat = "identity",
+    position = position_stack()
+  ) +
+  geom_point(aes(y = symp_sum), size = .5)
+symptom_postchange_pl <- annotate_change_pl(
+  symptom_postchange_pl,
+  n_symp_noni, nrow(qol_fu_pt_mean), "Symptoms", 9:10
+) +
+  theme(
+    legend.position = "none",
+    plot.title = element_blank()
+  )
+
+col_lab_1 <- wrap_elements(
+  panel = textGrob("a | End vs Start",
+    gp = gpar(fontface = "bold")
+  )
+)
+col_lab_2 <- wrap_elements(
+  panel = textGrob("b | Post vs End",
+    gp = gpar(fontface = "bold")
+  )
+)
+
+treat_change_pl <- col_lab_1 + col_lab_2 +
+  mental_health_change_pl + mental_health_postchange_pl +
+  physical_health_change_pl + physical_health_postchange_pl +
+  symptom_change_pl + symptom_postchange_pl +
+  plot_layout(ncol = 2, heights = c(.1, 1, 1, 1))
+
+save_plot(
+  treat_change_pl,
+  pdf_file = "results/treat-change-by-patient.png",
+  w = 16, h = 21
+)
+```
+
+Interpretation:
+
+- There are only few patients whose scores deteriorate between end and start of treatment. 
+- Therare are more patients whose scores deteriorate between post and end of treatment. 
+- For mental and physical health scores, the proportion of patients who deteriorate is generally larger than for TB symptom scores.
+
+
+### Association with non-improvement
+
+We dichotonomise the changes into improvement (positive change) and deterioration (negative change). 
+We estimate the association of deterioration with patient characteristics.
+
+
+**Figure:** Estimated association of deterioration in mental health, physical health or TB treatment scores 
+between end and start and between post and end of anti-TB treatment
+with patient characteristics.
+Median odds ratio (OR) as dotes, 95%-CrI as whiskers. MDR was excluded post treatment because of too few cases.
+
+```{r non-improvers-treatment-association, fig.width=6.3, fig.height=4.7}
+create_formula <- function(outcome) {
+  as.formula(
+    paste(outcome, "~", "age_bin + sex + hiv + mdr + alc_bin + tobacco_bin")
+  )
+}
+
+bin_dat_list <- function(data, outcome) {
+  data %>%
+    mutate(across(outcome, ~ ifelse(.x < 0, 1, 0))) %>%
+    split(.$.imp)
+}
+
+est_models <- function(mod_form, stan_data) {
+  brm_multiple(
+    mod_form,
+    data = stan_data,
+    family = bernoulli(link = "logit"),
+    recompile = FALSE,
+    cores = 4,
+    seed = 12345,
+    backend = "rstan",
+    open_progress = FALSE
+  )
+}
+
+treat_ment_mod <- est_models(
+  create_formula("ment_sum"),
+  bin_dat_list(qol_fu_tc, "ment_sum")
+)
+
+treat_phys_mod <- est_models(
+  create_formula("phys_sum"),
+  bin_dat_list(qol_fu_tc, "phys_sum")
+)
+
+treat_symp_mod <- est_models(
+  create_formula("symp_sum"),
+  bin_dat_list(qol_fu_tc, "symp_sum")
+)
+
+posttreat_ment_mod <- est_models(
+  create_formula("ment_sum"),
+  bin_dat_list(qol_fu_pt, "ment_sum")
+)
+
+posttreat_phys_mod <- est_models(
+  create_formula("phys_sum"),
+  bin_dat_list(qol_fu_pt, "phys_sum")
+)
+
+posttreat_symp_mod <- est_models(
+  create_formula("symp_sum"),
+  bin_dat_list(qol_fu_pt, "symp_sum")
+)
+
+treat_mod_draws <- rbind(
+  treat_ment_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "Mental health", comparison = "End vs Start"),
+  treat_phys_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "Physical health", comparison = "End vs Start"),
+  treat_symp_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "TB symptoms", comparison = "End vs Start"),
+  posttreat_ment_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "Mental health", comparison = "Post vs End"),
+  posttreat_phys_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "Physical health", comparison = "Post vs End"),
+  posttreat_symp_mod %>%
+    spread_draws(b_age_bin, b_sex, b_hiv, b_mdr, b_alc_bin, b_tobacco_bin) %>%
+    mutate(outcome = "TB symptoms", comparison = "Post vs End")
+) %>%
+  melt(c(".iteration", ".chain", ".draw", "outcome", "comparison")) %>%
+  mutate(or = exp(value)) %>%
+  rename(predictor = variable) %>%
+  mutate(
+    predictor = gsub("b_", "", predictor),
+    predictor = recode(predictor, !!!predictor_bin_sub)
+  ) %>%
+  group_by(outcome, predictor, comparison) %>%
+  summarize(
+    median = median(or),
+    lower = quantile(or, 0.025),
+    upper = quantile(or, 0.975)
+  ) %>%
+  ungroup() %>%
+  filter(!(predictor == "MDR" & comparison == "Post vs End")) # too few cases
+
+treat_ment_pl <- treat_mod_draws %>%
+  ggplot(aes(x = median, y = predictor, color = outcome)) +
+  facet_wrap(~comparison, ncol = 3) +
+  geom_vline(aes(xintercept = 1), linetype = "dotted", color = "red") +
+  geom_point(position = position_dodge(width = .66)) +
+  geom_errorbarh(
+    aes(xmin = lower, xmax = upper),
+    position = position_dodge(width = .66),
+    height = .25
+  ) +
+  labs(x = "Odds ratio") +
+  scale_color_manual(values = rainbow(10)[c(1, 6, 9)]) +
+  theme_custom() +
+  theme(
+    axis.title.y = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  )
+
+save_plot(
+  treat_ment_pl,
+  pdf_file = "results/treat-deteroration-association.png",
+  w = 16, h = 12
+)
+```
+
+Interpretation:
+
+- Patient characteristics are not really associated with deterioration. 
+- At most, deterioration in mental scores post vs end of treatment is less likely for HIV+ patients. 
+- Deterioration in physical scores and TB symptom scores post vs end of treatment tends to be more likely for HIV+ patients.
