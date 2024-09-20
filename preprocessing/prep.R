@@ -6,7 +6,7 @@ library(lubridate)
 #### Data ####
 
 # raw data
-file_name <- "data-raw/1734TuberculosisPati_DATA_2024-04-05_1403.csv"
+file_name <- "data-raw/1734TuberculosisPati_DATA_2024-09-12_1853.csv"
 df <- read.csv(file_name)
 
 # preprocessing
@@ -86,6 +86,7 @@ df_prep <- df %>%
     site = tools::toTitleCase(site),
     site = ifelse(site == "Mosambiqu", "Mosambique", site),
     site = ifelse(site == "Southafrica", "South Africa", site),
+    age = ifelse(age > 120, NA, age), # remove outliers
     sex = ifelse(sex == 1, 0, 1), # now: female is 1
     hiv = ifelse(hiv == 99, NA, ifelse(hiv == 1, 1, 0)),
     mdr = ifelse(mb_xpert_t1_rifresist == 1, 1, ifelse(mb_drug_rif == 2, 1, 0)),
@@ -542,7 +543,7 @@ df_full <- df_full %>%
 # add deaths
 df_death <- df %>%
   rename(death = death_yn) %>%
-  dplyr::select(record_id, death) %>%
+  dplyr::select(record_id, death, death_date) %>%
   filter(death == 1) %>%
   group_by(record_id) %>%
   slice(1) %>%
@@ -555,6 +556,15 @@ df_full <- df_full %>%
     death = ifelse(is.na(death), FALSE, death),
     death = ifelse(time == "Start", FALSE, death)
   )
+
+df_full %>%
+  group_by(record_id) %>%
+  dplyr::filter(any(death), all(is.na(eot_outcome))) %>%
+  ungroup() %>%
+  dplyr::select(record_id, site, time, date_visit, death, death_date, eot_outcome, nf_ae, nf_ae_date) %>%
+  arrange(record_id, time) %>%
+  write.csv("data-check/deaths-without-eot-outcome.csv", row.names = FALSE)
+
 
 k_deaths <- df_full %>%
   filter(death) %>%

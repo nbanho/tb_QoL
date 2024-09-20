@@ -111,9 +111,10 @@ df %>%
     death_yn,
     eot_outcome
   ) %>%
-  filter(
-    death_yn == 1
-  ) %>%
+  group_by(record_id) %>%
+  filter(any(death_yn == 1)) %>%
+  ungroup() %>%
+  arrange(record_id) %>%
   write.csv(
     "data-check/death-records.csv",
     row.names = FALSE
@@ -121,10 +122,9 @@ df %>%
 
 
 #### Treatment outcome ####
-df_clean %>%
-  group_by(record_id) %>%
-  slice(1) %>%
-  ungroup() %>%
+trt_out <- df_clean %>%
+  filter(time == "End") %>%
+  filter(!mfu) %>%
   mutate(eot_outcome = case_when(
     eot_outcome == 1 ~ "Cured",
     eot_outcome == 2 ~ "Treatment completed",
@@ -144,9 +144,32 @@ df_clean %>%
     "Transferred out from study site",
     "Not known",
     "Not available"
-  ))) %>%
+  )))
+
+trt_out %>%
   group_by(eot_outcome) %>%
   summarise(freq = n()) %>%
   ungroup() %>%
-  mutate(perc = paste0(round(freq / sum(freq) * 100), "%")) %>%
-  write.csv("data-check/treatment-outcome.csv", row.names = FALSE)
+  mutate(perc = paste0(round(freq / sum(freq) * 100), "%"))
+
+trt_out %>%
+  group_by(site) %>%
+  summarise(sum(eot_outcome == "Not available"))
+
+trt_out %>%
+  filter(eot_outcome == "Not available") %>%
+  dplyr::select(record_id, site, time, eot_outcome, death, mfu) %>%
+  write.csv("data-check/missing-treatment-outcome.csv", row.names = FALSE)
+
+
+df_clean %>%
+  filter(time %in% c("Start", "End")) %>%
+  group_by(time, site) %>%
+  summarise(across(
+    c(sf12_phys, sf12_ment),
+    .fns = list(
+      mean = function(x) mean(x, na.rm = TRUE),
+      sd = function(x) sd(x, na.rm = TRUE)
+    )
+  )) %>%
+  write.csv("data-check/sf12-by-country.csv", row.names = TRUE)
