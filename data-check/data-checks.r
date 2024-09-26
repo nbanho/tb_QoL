@@ -6,11 +6,33 @@ library(tidyverse)
 #### Data ####
 
 # raw data
-file_name <- "data-raw/1734TuberculosisPati_DATA_2024-04-05_1403.csv"
+file_name <- "data-raw/1734TuberculosisPati_DATA_2024-09-24_1548 1.csv"
 df <- read.csv(file_name)
 
 # prep data
 df_clean <- readRDS("data-clean/phys-ment-data.rds")
+
+#### QoL outcomes ####
+df_clean %>%
+  filter(
+    is.na(phq9_score),
+    is.na(sf12_ment),
+    is.na(sf12_phys),
+    is.na(smwt_dist),
+    is.na(stst_nr),
+    is.na(sgrq_tot_score),
+    !mfu, !death
+  ) %>%
+  dplyr::select(
+    record_id,
+    time,
+    site,
+    date_visit,
+    phq9_score, sf12_ment,
+    sf12_phys, smwt_dist, stst_nr,
+    sgrq_tot_score
+  ) %>%
+  write.csv("data-check/all-outcomes-missing.csv", row.names = FALSE)
 
 #### Mental health data ####
 df %>%
@@ -157,10 +179,28 @@ trt_out %>%
   summarise(sum(eot_outcome == "Not available"))
 
 trt_out %>%
-  filter(eot_outcome == "Not available") %>%
-  dplyr::select(record_id, site, time, eot_outcome, death, mfu) %>%
+  filter(
+    eot_outcome == "Not available",
+    !death, !mfu
+  ) %>%
+  dplyr::select(record_id, site, time, eot_outcome) %>%
   write.csv("data-check/missing-treatment-outcome.csv", row.names = FALSE)
 
+trt_out %>%
+  filter(
+    death,
+    eot_outcome != "Died"
+  ) %>%
+  dplyr::select(record_id, time, date_visit, site, death, eot_outcome) %>%
+  write.csv("data-check/deaths-not-in-eot_outcome.csv", row.names = FALSE)
+
+trt_out %>%
+  filter(
+    !death,
+    eot_outcome == "Died"
+  ) %>%
+  dplyr::select(record_id, time, date_visit, site, death, eot_outcome) %>%
+  write.csv("data-check/died-in-eot_outcome-but-not-deaths.csv", row.names = FALSE)
 
 df_clean %>%
   filter(time %in% c("Start", "End")) %>%

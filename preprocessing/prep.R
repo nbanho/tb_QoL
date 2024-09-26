@@ -6,7 +6,7 @@ library(lubridate)
 #### Data ####
 
 # raw data
-file_name <- "data-raw/1734TuberculosisPati_DATA_2024-09-12_1853.csv"
+file_name <- "data-raw/1734TuberculosisPati_DATA_2024-09-24_1548 1.csv"
 df <- read.csv(file_name)
 
 # preprocessing
@@ -21,6 +21,7 @@ df_prep <- df %>%
     dem_sex, # female is 2
     hiv_test_result, # 1 is positive
     ic1, ic2, ic3, ic4, ic5, ic6, ic7, # inclusion criteria
+    incl_substudy_yn,
     mb_xpert_t1_rifresist, mb_drug_rif, # drug resistance
     tbd_pat_cat, # relapse or new tb case
     starts_with("sf_"), # SF12 quesstionnaire
@@ -79,6 +80,7 @@ df_prep <- df %>%
   ungroup() %>%
   # generate variables
   mutate(
+    incl_substudy_yn = ifelse(is.na(incl_substudy_yn), 0, incl_substudy_yn),
     site = gsub("global_", "", site), # re-format site
     site = gsub("Global_", "", site),
     site = gsub("regional_", "", site),
@@ -230,7 +232,9 @@ df_prep <- df %>%
       tachycardia + auscultation + bmi16 + bmi18
   ) %>%
   dplyr::select(
-    record_id, time, date_visit, site, age, sex, bmi,
+    record_id, time, date_visit, site, 
+    incl_substudy_yn,
+    age, sex, bmi,
     hiv, mdr, highbact, cavity, clindiag, opacity, tbd_pat_cat,
     as_alc_calc, as_tobacco_calc,
     sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score,
@@ -411,6 +415,13 @@ df_prep <- left_join(
   by = c("record_id", "time")
 )
 
+# filter patients with no clinical data
+df_prep <- df_prep %>%
+  group_by(record_id) %>%
+  filter(!any(incl_substudy_yn == 1)) %>%
+  ungroup() %>%
+  dplyr::select(-incl_substudy_yn)
+
 # full data
 df_full <- expand.grid(
   record_id = unique(df_prep$record_id),
@@ -557,15 +568,6 @@ df_full <- df_full %>%
     death = ifelse(time == "Start", FALSE, death)
   )
 
-df_full %>%
-  group_by(record_id) %>%
-  dplyr::filter(any(death), all(is.na(eot_outcome))) %>%
-  ungroup() %>%
-  dplyr::select(record_id, site, time, date_visit, death, death_date, eot_outcome, nf_ae, nf_ae_date) %>%
-  arrange(record_id, time) %>%
-  write.csv("data-check/deaths-without-eot-outcome.csv", row.names = FALSE)
-
-
 k_deaths <- df_full %>%
   filter(death) %>%
   group_by(record_id) %>%
@@ -601,7 +603,7 @@ df_full <- df_full %>%
   mutate(
     ana = is.na(phq9_score) + is.na(sf12_ment) + is.na(sf12_phys) +
       is.na(smwt_dist) + is.na(stst_nr) +
-      is.na(sgrq_tot_score) + is.na(tb_symp_score) == 7,
+      is.na(sgrq_tot_score) == 6,
     dslv = as.numeric(current_date - lag(date_visit), "days"),
     mfu =
       ifelse(time == "Start" | !is.na(date_visit) | !ana, FALSE, NA),
