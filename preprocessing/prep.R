@@ -88,6 +88,7 @@ df_prep <- df %>%
     site = tools::toTitleCase(site),
     site = ifelse(site == "Mosambiqu", "Mosambique", site),
     site = ifelse(site == "Southafrica", "South Africa", site),
+    site = factor(site, levels = c("South Africa", "Malawi", "Mosambique", "Zambia", "Zimbabwe")),
     age = ifelse(age > 120, NA, age), # remove outliers
     sex = ifelse(sex == 1, 0, 1), # now: female is 1
     hiv = ifelse(hiv == 99, NA, ifelse(hiv == 1, 1, 0)),
@@ -232,7 +233,7 @@ df_prep <- df %>%
       tachycardia + auscultation + bmi16 + bmi18
   ) %>%
   dplyr::select(
-    record_id, time, date_visit, site, 
+    record_id, time, date_visit, site,
     incl_substudy_yn,
     age, sex, bmi,
     hiv, mdr, highbact, cavity, clindiag, opacity, tbd_pat_cat,
@@ -450,12 +451,6 @@ trt_out <- df %>%
   ) %>%
   ungroup() %>%
   mutate(
-    treat_success =
-      ifelse(eot_outcome <= 2, 1,
-        ifelse(eot_outcome <= 4, 0, NA)
-      )
-  ) %>%
-  mutate(
     time = "End",
     time = factor(time, levels = c("Start", "End", "Post"))
   )
@@ -482,16 +477,6 @@ adv_events <- df %>%
     is_nf_ae = ifelse(is_ae, ifelse(imp_death_date == "", 1, 0), 0)
   ) %>%
   filter(is_nf_ae == 1)
-
-sprintf(
-  "Adverse events in entire data: %i in %i patients",
-  nrow(adv_events), n_distinct(adv_events$record_id)
-)
-
-sprintf(
-  "IDs with AE but no entry in database: %s",
-  paste(setdiff(adv_events$record_id, df_full$record_id), collapse = ", ")
-)
 
 # if AE before baseline visit, code it as during treatment (Zimbabwe)
 # if AE date is missing, code it as during treatment (two cases)
@@ -568,25 +553,10 @@ df_full <- df_full %>%
     death = ifelse(time == "Start", FALSE, death)
   )
 
-k_deaths <- df_full %>%
-  filter(death) %>%
-  group_by(record_id) %>%
-  slice(1) %>%
-  ungroup() %>%
-  nrow()
-
-print(
-  sprintf(
-    "Deaths: %i (%i percent of patients)",
-    k_deaths, round(k_deaths / n_distinct(df_full$record_id) * 100)
-  )
-)
-
 # determine loss to followup
 #' Assume loss to follow-up if time since last visit > 8 months.
 #' Further assume loss to follow-up at post treatment
 #' if that was already the case at end of treatment.
-#' If death, then impute with worst outcomes.
 
 file_date_chr <- stringi::stri_extract(
   file_name,
@@ -597,7 +567,6 @@ waiting_time <- 8 * 30
 
 
 df_full <- df_full %>%
-  mutate(time = factor(time, levels = c("Start", "End", "Post"))) %>%
   group_by(record_id) %>%
   arrange(time) %>%
   mutate(
@@ -618,87 +587,17 @@ df_full <- df_full %>%
         )
       ),
     death = ifelse(!ana, FALSE, death),
+    death = ifelse(lag(death), TRUE, death),
     mfu = ifelse(death, FALSE, mfu),
-    treat_success = ifelse(death, 0, treat_success),
+    mfu = ifelse(time == "Start", FALSE, mfu),
+    death = ifelse(time == "Start", FALSE, death)
   ) %>%
   ungroup() %>%
-  # exclusion: post treatment data if death at end of treatment
-  group_by(record_id) %>%
-  mutate(cum_death = cumsum(death)) %>%
-  ungroup() %>%
-  filter(cum_death < 2) %>%
-  dplyr::select(-cum_death)
-
-table(df_full$mfu, df_full$death, useNA = "always")
-
-# inclusion: complete case data including loss to follow-up
-df_cc <- df_full %>%
-  filter(!is.na(mfu))
-
-n <- nrow(df_full)
-k_incl <- nrow(df_cc)
-k_pat_incl <- n_distinct(df_cc$record_id)
-
-print(sprintf(
-  "Complete: %i patients with %i observations (%i percent)",
-  k_pat_incl,
-  k_incl,
-  round(k_incl / n * 100)
-))
-
-# lost to follow-up
-k_mfu <- df_full %>%
-  filter(mfu) %>%
-  nrow()
-k_pat_mfu <- df_full %>%
-  filter(mfu) %>%
-  dplyr::select(record_id) %>%
-  unlist() %>%
-  n_distinct()
-
-print(sprintf(
-  "MFU w/o deaths: %i (%i percent of patients, %i percent of complete data)",
-  k_pat_mfu,
-  round(k_pat_mfu / k_pat_incl * 100),
-  round(k_mfu / k_incl * 100)
-))
-
-# visit date date but missing information
-strange <- filter(df_full, !mfu, ana, !is.na(date_visit), death == 0)
-k_strange <- nrow(strange)
-
-print(sprintf(
-  "All outcomes missing: %i (%i percent of complete data)",
-  k_strange,
-  round(100 * k_strange / k_incl)
-))
-
-# exclusion
-k_excl_end <- df_full %>%
-  group_by(record_id) %>%
-  filter(time == "End", is.na(mfu), death == 0) %>%
-  ungroup() %>%
-  nrow()
-
-print(
-  sprintf(
-    "Waiting for end of treatment data: %i (%i percent)",
-    k_excl_end, round(k_excl_end / (n / 3) * 100)
+  mutate(
+    wfu = ifelse(is.na(mfu), TRUE, FALSE),
+    mfu = ifelse(is.na(mfu), FALSE, mfu),
+    mfu = ifelse(ana & !wfu & !death, TRUE, mfu)
   )
-)
-
-k_excl_post <- df_full %>%
-  group_by(record_id) %>%
-  filter(time == "Post", is.na(mfu), death == 0) %>%
-  ungroup() %>%
-  nrow()
-
-print(
-  sprintf(
-    "Waiting for post treatment data: %i (%i percent)",
-    k_excl_post, round(k_excl_post / (n / 3) * 100)
-  )
-)
 
 # save data
-saveRDS(df_cc, "data-clean/phys-ment-data.rds")
+saveRDS(df_full, "data-clean/phys-ment-data.rds")

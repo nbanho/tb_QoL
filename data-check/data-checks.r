@@ -12,6 +12,32 @@ df <- read.csv(file_name)
 # prep data
 df_clean <- readRDS("data-clean/phys-ment-data.rds")
 
+#### Tiana ####
+df %>%
+  filter(record_id %in% c(
+    "3511-352",
+    "3511-353",
+    "3511-363",
+    "3511-359",
+    "3511-364",
+    "3511-357",
+    "3511-361",
+    "3511-365",
+    "3511-372",
+    "3520-150",
+    "3520-149",
+    "3520-155",
+    "3520-157"
+  )) %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    redcap_data_access_group,
+    incl_substudy_yn,
+    matches("ic\\d")
+  ) %>%
+  View()
+
 #### QoL outcomes ####
 df_clean %>%
   filter(

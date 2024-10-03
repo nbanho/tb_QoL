@@ -8,6 +8,12 @@ require(gg.layers)
 require(kunstomverse)
 require(ggalluvial)
 require(wesanderson) # https://github.com/karthik/wesanderson
+require(scales)
+
+# symmetric square root transformation scale
+sqrt_sign <- function(x) sign(x) * sqrt(abs(x))
+sqrt_sign_inv <- function(x) sign(x) * x^2
+sqrt_sign_trans <- function() trans_new("sqrt_sign", sqrt_sign, sqrt_sign_inv)
 
 # default colors
 bluegrey <- c(wes_palette("Royal1")[1], wes_palette("Darjeeling1")[5])

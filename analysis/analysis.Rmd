@@ -27,7 +27,7 @@ source("utils/summaries.r")
 ## Data
 
 We analyze the quality of life (QoL) outcomes of tuberculosis (TB) patients 
-at the start of, end of, and post treatment in IeDEA-SA cohorts:
+at the start of, end of, and post anti-TB treatment in IeDEA-SA cohorts:
 South Africa, Malawi, Mozambique, Zambia, and Zimbabwe.
 The  data is as of Sep 24, 2024.
 
@@ -100,8 +100,6 @@ predictor_bin <- c(
 predictor_sub <- predictor[-c(4, 6)]
 predictor_bin_sub <- predictor_bin[-c(4, 6)]
 
-sites <- c("South Africa", "Malawi", "Mosambique", "Zambia", "Zimbabwe")
-
 treat_effect_lab <- c("End vs Start treatment", "Post vs End treatment")
 ```
 
@@ -109,12 +107,12 @@ treat_effect_lab <- c("End vs Start treatment", "Post vs End treatment")
 
 The quality of life **(QoL)** outcomes:
 
-* PHQ9-S: Patient Health Questionnaire 9 - Score (Range: 0-27)
-* SF12-MCS: Short form survey (SF12) - Mental Component Score (Range: 0-100)
-* SF12-PCS: Short form survey (SF12) - Physical Component Score (Range: 0-100)
-* 6MWT-D: 6 Minute Walk Test - Distance
-* STST-R: Sit-to-Stand Test - Number of Repetitions
-* SGRQ-S: St. George's Respiratory Questionnaire - Total Score (Range: 0-100)
+* PHQ9-S: Patient Health Questionnaire 9 - Score (Range: 0-27; lower scores are better)
+* SF12-MCS: Short form survey (SF12) - Mental Component Score (Range: 0-100; higher scores are better)
+* SF12-PCS: Short form survey (SF12) - Physical Component Score (Range: 0-100; higher scores are better)
+* 6MWT-D: 6 Minute Walk Test - Distance (longer distances are better)
+* STST-R: Sit-to-Stand Test - Number of Repetitions (more repititions are better)
+* SGRQ-S: St. George's Respiratory Questionnaire - Total Score (Range: 0-100; lower scores are better)
 * ~~TB-SS: TB - Symptom Score (Range: 0-9)~~
 
 We define impaired QoL per outcome as:
@@ -127,18 +125,23 @@ We define impaired QoL per outcome as:
 6. SGRQ-TS > 25
 7. ~~TB-SS > 4~~
 
+Note that later, during modelling, we transform PHQ9-S and SGRQ-S so that for all outcomes positive changes mean improvement.
+
 **Exclusion:**
 
-We exclude observations where we still wait for the next clinical visit.
+We do not impute or analyse observations where we still wait for the next clinical visit.
 That is, end of treatment or post treatment is still within 8mo since last visit.
 
 **Missing observations**:
 
 The outcomes can be missing for one of the following reasons:
 
-1. *Death*: The patient died during or post treatment.
-2. *Missing follow-up* (MFU): Missing QoL outcome because there was no follow-up visit.
-3. *Unrecorded*: One or more QoL outcomes were not recorded.
+1. *Pending visit*: We still wait for the next clinical visit.
+2. *Death*: The patient died during or post treatment.
+3. *Missing follow-up* (MFU): Missing QoL outcome because there was no follow-up visit.
+4. *Unrecorded*: One or more QoL outcomes were not recorded.
+
+Pending visit data will not be imputed, other missings (death, MFU, unrecorded) will be. 
 
 **Patient characteristics**:
 
@@ -153,6 +156,8 @@ The predictors we consider are:
 7. Relapse instead of new TB case
 8. ASSIST alcohol score
 9. ASSIST tobacco score
+
+Age and ASSIST scores will be further dichotomized during modeling analysis. 
 
 **Additional variables::**
 
@@ -187,39 +192,37 @@ Almost all TB treatment failures are death, therefore we do not model TB treatme
 
 ### Study population
 
+**Table 1**: Number and proportion of visits, missing visits, deceased patients, and pending visits over time.
+
 ```{r sample}
-print(
-  sprintf(
-    "Total: %i patients with %i observations.",
-    n_distinct(qol$record_id), nrow(qol)
-  )
-)
-
-print(
-  sprintf(
-    "Baseline: %i observations.",
-    nrow(qol_start)
-  )
-)
-
-print(
-  sprintf(
-    "End of anti-TB treatment: %i observations (%i percent).",
-    nrow(qol_end),
-    round(100 * nrow(qol_end) / n_distinct(qol$record_id))
-  )
-)
-
-print(
-  sprintf(
-    "Post treatment: %i observations (%i percent).",
-    nrow(qol_post),
-    round(100 * nrow(qol_post) / n_distinct(qol$record_id))
-  )
-)
+qol %>%
+  group_by(time) %>%
+  summarise(
+    N = sum(!wfu & !mfu & !death),
+    MFU = sum(mfu),
+    Death = sum(death),
+    WFU = sum(wfu)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Total = N + MFU + Death + WFU,
+    N = paste0(N, " (", round(100 * N / Total), "%)"),
+    MFU = paste0(MFU, " (", round(100 * MFU / Total), "%)"),
+    Death = paste0(Death, " (", round(100 * Death / Total), "%)"),
+    WFU = paste0(WFU, " (", round(100 * WFU / Total), "%)")
+  ) %>%
+  dplyr::select(-Total) %>%
+  set_names(c(
+    "Time",
+    "Visit",
+    "Missing visit",
+    "Deceased",
+    "Pending visit"
+  )) %>%
+  knitr::kable()
 ```
 
-**Table 1**: Number and proportion of patients per site.
+**Table 2**: Number and proportion of patients per site.
 
 ```{r sites}
 qol_start %>%
@@ -230,33 +233,7 @@ qol_start %>%
   knitr::kable(align = "lrr")
 ```
 
-**Table 2**: Number and proportion of patients with missing follow-up (MFU) study visits.
-
-```{r lost-to-follow-up}
-qol %>%
-  group_by(time) %>%
-  summarize(
-    Count = sum(mfu),
-    `Proportion` = paste0(round(sum(mfu) / n() * 100), "%")
-  ) %>%
-  rename(Time = time) %>%
-  knitr::kable(align = "lrr")
-```
-
-**Table 3**: Number and proportion of patients who died.
-
-```{r deaths}
-qol %>%
-  group_by(time) %>%
-  summarize(
-    Count = sum(death),
-    `Proportion` = paste0(round(sum(death) / n() * 100), "%")
-  ) %>%
-  rename(Time = time) %>%
-  knitr::kable(align = "lrr")
-```
-
-**Table 4**: Patient characteristics at baseline.
+**Table 3**: Patient characteristics at baseline.
 
 ```{r predictors}
 qol_start %>%
@@ -276,11 +253,11 @@ qol_start %>%
   knitr::kable(align = "lr")
 ```
 
-**Table 5**: Distribution of patient characteristics by time.
+**Table 4**: Distribution of patient characteristics by time of patients with visits.
 
 ```{r}
 qol %>%
-  filter(!mfu, !death) %>%
+  filter(!mfu, !death, !wfu) %>%
   mutate(
     age_bin = ifelse(age < 30, 1, 0),
     alc_bin = ifelse(as_alc_calc > 0, 1, 0),
@@ -302,11 +279,12 @@ qol %>%
 Note: 
 
 - Few MDR patients at baseline, proportionally even less at the end of anti-TB treatment and post treatment.
-- Lower prevalence of alcohol and tobacco use at the end of treatment (but not post treatment) compared with baseline.
+- Lower prevalence of alcohol and tobacco use at the end of treatment (but not post treatment) compared with baseline. 
+- Strangely also proportionally many more missings in the alcohol and tobacco score at the end of treatment.
 
 &nbsp;
 
-**Table 6**: Number of patients with non-fatal serious adverse events (AE). 
+**Table 5**: Number of patients with non-fatal serious adverse events (AE). 
 
 ```{r no-adverse-events}
 qol %>%
@@ -323,12 +301,12 @@ qol %>%
 
 Note:
 
-- Roughly half of patients with AE also died.
-- Few patients with AE were have missing follow-up visits.
+- Roughly a third of patients with any AE also died.
+- Few patients with AE have missing follow-up visits.
 
 &nbsp;
 
-**Table 7**: Number and proportion of patients who received mental health treatments. 
+**Table 6**: Number and proportion of patients who received mental health treatments. 
 
 ```{r no-mental-health-treatment}
 qol %>%
@@ -348,7 +326,7 @@ Note:
 
 &nbsp;
 
-**Table 8**: List of visits of patients receiving mental health treatment, their mental health outcomes (PHQ9-S and SF12-MCS) and whether they died or had missing follow-up visits.
+**Table 7**: List of visits of patients receiving mental health treatment, their mental health outcomes (PHQ9-S and SF12-MCS) and whether they died or had missing follow-up visits.
 
 ```{r list-mental-health-treatment}
 qol %>%
@@ -367,7 +345,7 @@ qol %>%
   knitr::kable(align = "llrrrr")
 ```
 
-**Table 9**: TB Treatment outcomes.
+**Table 8**: TB Treatment outcomes.
 
 ```{r tb-treatment-outcomes}
 qol %>%
@@ -411,7 +389,7 @@ Note:
 
 #### Summary
 
-**Table 10**: QoL scores at the start of anti-TB treatment.
+**Table 9**: QoL scores at the start of anti-TB treatment.
 
 ```{r summaries-1}
 # start of treatment
@@ -430,7 +408,7 @@ qol_start %>%
   knitr::kable(align = "lr")
 ```
 
-**Table 11**: QoL scores at the end of anti-TB treatment.
+**Table 10**: QoL scores at the end of anti-TB treatment.
 
 ```{r summaries-2}
 # end of treatment
@@ -449,7 +427,7 @@ qol_end %>%
   knitr::kable(align = "lr")
 ```
 
-**Table 12**: QoL scores post anti-TB treatment.
+**Table 11**: QoL scores post anti-TB treatment.
 
 ```{r summaries-3}
 # post treatment
@@ -722,10 +700,11 @@ save_plot(
 ```{r proportions, fig.width=6.3, fig.height=3.9}
 var_names <- c(
   "Y" = "Yes (impaired QoL)",
-  "N" = "No (QoL not impaired)",
-  "D" = "Death before visit",
+  "N" = "No (not impaired)",
+  "D" = "Deceased",
   "L" = "Missing follow-up",
-  "U" = "Unrecorded"
+  "U" = "Unrecorded",
+  "W" = "Pending visit"
 )
 
 var_colors <- c(
@@ -733,19 +712,25 @@ var_colors <- c(
   wes_palette("Zissou1")[2],
   wes_palette("Zissou1")[3],
   wes_palette("Royal1")[3],
-  wes_palette("Royal1")[1]
+  wes_palette("Royal1")[1],
+  "grey"
 )
 
 qol_bin_comp <- qol %>%
-  dplyr::select(all_of(c("time", "mfu", "death", names(outcome_bin)))) %>%
-  melt(c("time", "mfu", "death")) %>%
+  dplyr::select(all_of(c(
+    "time",
+    "mfu", "death", "wfu",
+    names(outcome_bin)
+  ))) %>%
+  melt(c("time", "mfu", "death", "wfu")) %>%
   group_by(time, variable) %>%
   summarize(
     Y = sum(value, na.rm = TRUE),
     N = sum(value == 0, na.rm = TRUE),
     D = sum(death),
-    U = sum(is.na(value) & !mfu & !death, na.rm = TRUE),
-    L = sum(mfu, na.rm = TRUE)
+    U = sum(is.na(value) & !mfu & !death & !wfu),
+    L = sum(mfu),
+    W = sum(wfu)
   ) %>%
   ungroup() %>%
   rename(outcome = variable) %>%
@@ -791,13 +776,32 @@ qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
     legend.title = element_blank(),
     legend.key.width = unit(.2, "cm"),
     legend.key.height = unit(.4, "cm")
-  )
+  ) +
+  guides(fill = guide_legend(nrow = 1))
 
 save_plot(
   qol_bin_comp_pl,
   pdf_file = "results/impaired-qol.png",
   w = 16, h = 10
 )
+# save_plot(
+#   qol_bin_comp_pl +
+#     facet_wrap(~outcome, nrow = 1, labeller = labeller(
+#       outcome = c(
+#         "PHQ9-S>10" = "PHQ9-S\n>10",
+#         "SF12-MCS<42" = "SF12-MCS\n<42",
+#         "SF12-PCS<50" = "SF12-PCS\n<50",
+#         "6MWT-D<400m" = "6MWT-D\n<400m",
+#         "STST-R<20" = "STST-R\n<20",
+#         "SGRQ-TS>25" = "SGRG-TS\n>25"
+#       )
+#     )) +
+#     ggtitle("Figure: Proportion of patients with impaired QoL\nat the end of and six months post TB treatment.") +
+#     guides(fill = guide_legend(nrow = 2)) +
+#     theme(panel.spacing = unit(.1, "cm")),
+#   pdf_file = "doc/croi/figure-impaired-qol.png",
+#   w = 10.15, h = 10.15
+# )
 ```
 
 Here are the counts and proportions shown in the plot:
@@ -833,9 +837,10 @@ qol_bin_comp %>%
 var_names_dprs <- c(
   "Y" = "Depressed",
   "N" = "Not depressed",
-  "D" = "Death before visit",
+  "D" = "Deceased",
   "L" = "Missing follow-up",
-  "U" = "Unrecorded"
+  "U" = "Unrecorded",
+  "W" = "Pending visit"
 )
 
 var_colors_dprs <- c(
@@ -843,7 +848,8 @@ var_colors_dprs <- c(
   wes_palette("Zissou1")[2],
   wes_palette("Zissou1")[3],
   wes_palette("Royal1")[3],
-  wes_palette("Royal1")[1]
+  wes_palette("Royal1")[1],
+  "grey"
 )
 
 # create links
@@ -854,6 +860,7 @@ links_dprs <- qol %>%
     ment_trt_yn,
     death,
     mfu,
+    wfu,
     phq9_score_bin
   ) %>%
   rename(value = phq9_score_bin) %>%
@@ -861,8 +868,10 @@ links_dprs <- qol %>%
     value =
       ifelse(death == 1 & is.na(value) & time != "Start", var_names_dprs["D"],
         ifelse(mfu, var_names_dprs["L"],
-          ifelse(is.na(value), var_names_dprs["U"],
-            ifelse(value == 1, var_names_dprs["Y"], var_names_dprs["N"])
+          ifelse(wfu, var_names_dprs["W"],
+            ifelse(is.na(value), var_names_dprs["U"],
+              ifelse(value == 1, var_names_dprs["Y"], var_names_dprs["N"])
+            )
           )
         )
       ),
@@ -898,7 +907,8 @@ flow_dprs_pl <- links_dprs %>%
     legend.title = element_blank(),
     legend.position = "top",
     axis.title.y = element_blank()
-  )
+  ) +
+  guides(fill = guide_legend(nrow = 1))
 
 save_plot(
   flow_dprs_pl,
@@ -911,68 +921,153 @@ save_plot(
 
 ## Imputation
 
-We impute the missing values in the continuous QoL scores.
-Outcomes missing because of death or missing follow-up visit will not be imputed, only unrecorded ones.
-However, we consider subsequent death or missing follow-up visit as a predictor during imputation.
-Similarly, we consider any adverse adverse event at the start of, end of, or post treatment as a predictor during imputation.
-Finally, we repeat the main analysis with a fully imputed dataset including those with missing follow-up.
+We impute missing values in continuous QoL scores using multivariate imputation by chained equations.
+We impute per patient ID using all outcomes from all time points, patient characteristics at baseline, received mental health treatment, and non-fatal serious adverse events.
+Alcohol and tobacco use were also considered only at baseline because of too many missings at the end of treatment.
+Data from incomplete patients (i.e. deceased patients, patients with missing follow-up visits or pending end of or post treatment visits) are ignored in the imputation model. 
+However, data from deceased patients and patients with missing follow-up visits are still imputed and analysed later. 
 
-**Figure 7**: Imputation check for a random sample of 30 patients, showing the imputed majority label across datasets.
+
+**Figure 7**: Imputation check for a random sample of 30 patients with complete follow-up visits. Shown is the mean of imputed scores across datasets.
 
 ```{r imputation, fig.height=12}
 # wide format
 qol_fu <- qol %>%
-  group_by(record_id) %>%
-  arrange(time) %>%
-  mutate(
-    mfu_lead = lead(mfu),
-    death_lead = lead(death)
+  dplyr::select(all_of(c(
+    "record_id", "time",
+    names(outcome_cont),
+    "ment_trt_yn",
+    "nf_ae",
+    "mfu",
+    "death",
+    "wfu"
+  ))) %>%
+  pivot_wider(
+    names_from = time,
+    values_from = c(
+      names(outcome_cont),
+      "ment_trt_yn",
+      "nf_ae",
+      "mfu",
+      "death",
+      "wfu"
+    )
   ) %>%
-  ungroup() %>%
-  mutate(
-    across(c(mfu_lead, death_lead), ~ ifelse(is.na(.x), 0, .x))
+  left_join(
+    qol %>%
+      filter(time == "Start") %>%
+      dplyr::select(all_of(c(
+        "record_id", "site",
+        names(predictor_sub)
+      ))),
+    by = "record_id"
   ) %>%
-  filter(!mfu & !death) %>%
-  ungroup() %>%
-  arrange(record_id, time) %>%
   mutate(
+    nf_ae_Start = 0,
+    nf_ae_Post = 0,
     across(
       c(
-        mfu_lead, death_lead, nf_ae, ment_trt_yn,
-        sex, hiv, mdr, cavity, tbd_pat_cat
+        nf_ae_Start, nf_ae_End, nf_ae_Post,
+        ment_trt_yn_Start, ment_trt_yn_End, ment_trt_yn_Post,
+        sex, hiv, mdr, tbd_pat_cat
       ),
       ~ factor(ifelse(.x == 1, "Yes", "No"), levels = c("No", "Yes"))
     )
+  )
+
+# complete patients used for imputation model
+complete_patients <- qol %>%
+  group_by(record_id) %>%
+  summarise(
+    died = any(death),
+    mfu = any(mfu),
+    wfv = any(wfu)
   ) %>%
-  dplyr::select(all_of(c(
-    "record_id",
-    "time",
-    "site",
-    "mfu_lead",
-    "death_lead",
-    "nf_ae",
-    "ment_trt_yn",
-    names(outcome_cont),
-    names(predictor)
-  )))
+  ungroup() %>%
+  mutate(
+    not_complete = (died | mfu | wfv),
+    complete = !not_complete
+  )
+complete_patients <- left_join(
+  qol_fu %>% dplyr::select(record_id),
+  complete_patients,
+  by = "record_id"
+)
+
+
+# matrix which values should be imputed
+where_impute <- is.na(qol_fu)
+colnames(where_impute) <- colnames(qol_fu)
+row.names(where_impute) <- qol_fu$record_id
+where_impute[, grepl("death", colnames(where_impute))] <- FALSE
+where_impute[, grepl("mfu", colnames(where_impute))] <- FALSE
+where_impute[, grepl("wfu", colnames(where_impute))] <- FALSE
+
+# predictor matrix
+pred_mat <- matrix(1, ncol = ncol(qol_fu), nrow = ncol(qol_fu))
+colnames(pred_mat) <- colnames(qol_fu)
+row.names(pred_mat) <- colnames(qol_fu)
+pred_mat[, 1] <- 0
+pred_mat[1, ] <- 0
+diag(pred_mat) <- 0
+not_impute_cols <- c(
+  paste("mfu", levels(qol$time), sep = "_"),
+  paste("death", levels(qol$time), sep = "_"),
+  paste("wfu", levels(qol$time), sep = "_")
+)
+pred_mat[not_impute_cols, ] <- 0
+pred_mat[, not_impute_cols] <- 0
+
+# methods
+imp_meth <- c(
+  "", # record_id (not imputed)
+  rep("pmm", length(outcome_cont) * length(levels(qol$time))), # outcomes by time
+  rep("pmm", length(levels(qol$time))), # ment_trt at end by time
+  rep("", length(levels(qol$time))), # mfu (not imputed)
+  rep("pmm", length(levels(qol$time))), # nf_ae at end
+  rep("", length(levels(qol$time))), # death (not imputed)
+  rep("", length(levels(qol$time))), # wfu (not imputed)
+  "pmm", # site
+  "pmm", # age
+  "pmm", # sex
+  "pmm", # hiv,
+  "pmm", # mdr
+  "pmm", # tbd_pat_cat
+  rep("pmm", 2) # assisst alcohol and tobacco score
+)
 
 # imputation
 n_datasets <- 20
 qol_fu_imp <- mice(
-  qol_fu[, -1],
+  qol_fu,
+  method = imp_meth,
+  predictorMatrix = pred_mat,
   m = n_datasets,
   maxit = 10,
   seed = 12345,
-  print = FALSE
+  print = FALSE,
+  ignore = complete_patients$not_complete,
+  where = where_impute
 )
 
 # plot(qol_fu_imp, layout = c(2, 16))
 
 # data
-qol_fu_imp <- complete(qol_fu_imp, "long") %>%
-  mutate(record_id = rep(qol_fu$record_id, times = n_datasets))
+qol_fu_imp_long <- complete(qol_fu_imp, "long") %>%
+  pivot_longer(
+    cols = ends_with("_End") | ends_with("_Post") | ends_with("_Start"),
+    names_to = c(".value", "time"),
+    names_pattern = "(.*)_(.*)"
+  ) %>%
+  mutate(
+    time = factor(time, levels = c("Start", "End", "Post"))
+  ) %>%
+  group_by(.imp, record_id) %>%
+  tidyr::fill(c(names(predictor_sub), "site"), .direction = "downup") %>%
+  ungroup()
 
-qol_fu_imp_mode <- qol_fu_imp %>%
+qol_fu_imp_mode <- qol_fu_imp_long %>%
+  filter(!wfu, !mfu, !death) %>%
   dplyr::select(all_of(c(".imp", "record_id", "time", names(outcome_cont)))) %>%
   melt(c(".imp", "record_id", "time")) %>%
   group_by(record_id, time, variable) %>%
@@ -981,7 +1076,7 @@ qol_fu_imp_mode <- qol_fu_imp %>%
   ) %>%
   rename(imputed = value) %>%
   left_join(
-    qol_fu %>%
+    qol %>%
       dplyr::select(all_of(c("record_id", "time", names(outcome_cont)))) %>%
       melt(c("record_id", "time")) %>%
       rename(observed = value),
@@ -994,7 +1089,7 @@ check_imp_pl <- qol_fu_imp_mode %>%
   group_by(record_id) %>%
   filter(any(!is_observed)) %>%
   ungroup() %>%
-  filter(record_id %in% sample(unique(record_id), 30)) %>%
+  filter(record_id %in% sample(unique(.$record_id), 30)) %>%
   ggplot(aes(
     y = time,
     x = outcome,
@@ -1023,15 +1118,19 @@ save_plot(
 
 &nbsp;
 
-## Modeling
+## Estimation
 
-We model z-scores to make the results across outcomes more comparable.
-We invert PHQ9-S and SGRQ-TS using (max_y - y) so that all changes>0 imply an QoL improvement. 
-We report the median and 95% credible interval (CrI) of the posterior draws for each model parameter estimate.
+- We estimate QoL changes over time, first excluding missing follow-up visits and missing visits because the patient died.
+Specifically, if a patient had a baseline visit but missing follow-up, the baseline visit is still included but the follow-up is not. 
+- We use Bayesian linear regression models to estimate the average QoL outcome by time point (start of, end of, and post treatment).
+The average change over time is estimated by comparing the estimated average QoL outcomes between end vs start of treatment and between post and end of treatment.
+- Since the outcomes are on different scales, we first compute z-scores (y - mean(y)) / sd(y) of each outcome, to make the estimation results more comparable across.
+We also invert PHQ9-S and SGRQ-TS using (max_y - y) so that all changes>0 imply an QoL improvement. 
+- We report the median and 95% credible interval (CrI) of the posterior draws from the Bayesian model for each estimate.
 
 ```{r model}
 # prepare data
-qol_fu_imp_prep <- qol_fu_imp %>%
+qol_fu_imp_prep <- qol_fu_imp_long %>%
   mutate(
     alc_bin = ifelse(as_alc_calc > 0, "Yes", "No"),
     tobacco_bin = ifelse(as_tobacco_calc > 0, "Yes", "No"),
@@ -1039,8 +1138,7 @@ qol_fu_imp_prep <- qol_fu_imp %>%
     across(
       c(age_bin, alc_bin, tobacco_bin),
       ~ factor(.x, levels = c("No", "Yes"))
-    ),
-    site = factor(site, levels = sites)
+    )
   ) %>%
   mutate(
     phq9_score = 27 - phq9_score,
@@ -1060,13 +1158,15 @@ mod_qol <- brm_multiple(
       sf12_phys, smwt_dist, stst_nr,
       sgrq_tot_score
     )
-    ~ site + mfu_lead + death_lead + nf_ae + ment_trt_yn +
+    ~ site + nf_ae + ment_trt_yn +
       age_bin * time + sex * time +
       hiv * time + mdr * time + tbd_pat_cat * time +
       alc_bin * time + tobacco_bin * time
   )
   + set_rescor(rescor = FALSE),
-  data = qol_fu_imp_prep %>% split(.$.imp),
+  data = qol_fu_imp_prep %>%
+    filter(!mfu, !death, !wfu) %>%
+    split(.$.imp),
   chains = 4,
   prior = c(
     set_prior("normal(0, 1)", class = "sigma", resp = names(outcome_cont2)),
@@ -1087,7 +1187,7 @@ mod_qol_smpls <- mod_qol %>%
 
 &nbsp;
 
-### QoL changes over time
+### QoL changes in survivors with follow-up visits
 
 **Figure 8**: Estimated change in QoL outcomes between end vs start and post vs end of anti-TB treatment.
 
@@ -1151,7 +1251,7 @@ Interpretation:
 
 - All QoL outcomes improved from the start to the end of anti-TB treatment.
 - The improvement at the end of treatment was smaller for 6MWT and STSTR. 
-- Some outcomes tended to improve further post treatment.
+- SF12-PCS improved further post treatment.
 
 &nbsp;
 
@@ -1182,17 +1282,16 @@ time_smpls %>%
 
 &nbsp;
 
-### Sensitivity check for death and MFU patients
+### Simulation: hypothetical changes in patients without follow-up visits to offset improvements
 
-As a sensitivity check, we estimate for each outcome the change in QoL that would be needed 
-in patients who died or with missing follow-up visits
-in order to offset the estimated QoL changes in patients with follow-up visits.
-We compute this as *-beta x (n_fu / n_nfu)* for each outcome,
-where beta is the estimated effect, n_fu is the number of patients *with* and n_nfu is the number of patients *without* follow-up or death.
+As a simulation exercise, we estimate for each outcome the change in QoL that would be needed 
+in patients who died or with missing follow-up visits in order to offset the positive estimated QoL changes in patients with follow-up visits.
+We compute this as *-beta (n_fu / n_nfu)*, where beta is the model-estimated effect, n_fu is the number of patients *with* and n_nfu is the number of patients *without* follow-up or death.
 
-**Figure 9:** Estimated change in QoL (grey) for patients with follow-up visits vs offsetting hypothetical change (red) in QoL for patients without missing follow-up visit or death.
 
-```{r sensitivity-check}
+**Figure 9:** Estimated change in QoL for patients with follow-up visits (blue) vs hypothetical change in QoL for patients without missing follow-up visit or death so that net effect would be zero (red).
+
+```{r simulation-check}
 n_end <- n_distinct(qol$record_id[qol$time == "End"])
 n_end_mfu <- sum(qol$mfu[qol$time == "End"])
 n_end_death <- sum(qol$death[qol$time == "End"])
@@ -1242,14 +1341,14 @@ save_plot(
 
 Interpretation:
 
-- QoL decrease for patients without follow-up would need to be extremely large to offset improvements in patients with follow-up visits so that there is no average effect.
-- We could assume that is unlikely that patients without would have such diametrically different changes in QoL than patients with follow-up.
+- QoL decrease for patients without follow-up would often need to be extremely large so that the net effect is zero.
+- We could probably assume that such diametrically different changes in QoL for patients without follow-up visits are unlikely.
 
 &nbsp;
 
 Here are the estimated in blue and hypothetical offsetting changes shown in red in the plot:
 
-```{r sensitivity-check-table}
+```{r simulation-check-table}
 null_treat_effect %>%
   dplyr::select(-variable) %>%
   group_by(outcome, group) %>%
@@ -1271,76 +1370,16 @@ null_treat_effect %>%
 
 &nbsp;
 
-### Sensitivity check with fully imputed dataset 
+### Sensitivity check: including missing follow-up visits
 
-As another sensitivity check, we estimate QoL changes using a fully imputed dataset, including patients with missing follow-up or death.
+As a sensitivity check, we re-estimate QoL changes including missing follow-ups and deaths (i.e. their imputed QoL outcomes).
+We consider missing-follow-ups and deceased patients only once, i.e. if both end of and post-treatment visits are missing, we only consider the end of treatment visit.
 
-**Figure 10**: Estimated change in QoL outcomes for fully-imputed dataset including patients with missing follow-up visits or death.
+
+**Figure 10**: Estimated change in QoL when including missing follow-up visits and death.
 
 ```{r sensitivity-full-imputation}
-# imputation
-qol_full <- qol %>%
-  group_by(record_id) %>%
-  arrange(time) %>%
-  mutate(
-    mfu_lead = lead(mfu),
-    death_lead = lead(death)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    across(c(mfu_lead, death_lead), ~ ifelse(is.na(.x), 0, .x))
-  ) %>%
-  ungroup() %>%
-  arrange(record_id, time) %>%
-  mutate(
-    across(
-      c(
-        mfu_lead, death_lead, nf_ae, ment_trt_yn,
-        sex, hiv, mdr, cavity, tbd_pat_cat
-      ),
-      ~ factor(ifelse(.x == 1, "Yes", "No"), levels = c("No", "Yes"))
-    )
-  ) %>%
-  dplyr::select(all_of(c(
-    "record_id",
-    "time",
-    "site",
-    "mfu_lead",
-    "death_lead",
-    "nf_ae",
-    "ment_trt_yn",
-    names(outcome_cont),
-    names(predictor)
-  )))
-
-qol_full_imp <- mice(
-  qol_full[, -1],
-  m = n_datasets,
-  maxit = 10,
-  seed = 12345,
-  print = FALSE
-)
-
-qol_full_imp <- complete(qol_full_imp, "long") %>%
-  mutate(record_id = rep(qol_full_imp$record_id, times = n_datasets)) %>%
-  mutate(
-    alc_bin = ifelse(as_alc_calc > 0, "Yes", "No"),
-    tobacco_bin = ifelse(as_tobacco_calc > 0, "Yes", "No"),
-    age_bin = ifelse(age < 30, "Yes", "No"),
-    across(
-      c(age_bin, alc_bin, tobacco_bin),
-      ~ factor(.x, levels = c("No", "Yes"))
-    ),
-    site = factor(site, levels = sites)
-  ) %>%
-  mutate(
-    phq9_score = 27 - phq9_score,
-    sgrq_tot_score = 100 - sgrq_tot_score
-  ) %>%
-  group_by(.imp) %>%
-  mutate(across(matches(names(outcome_cont)), ~ (.x - mean(.x)) / sd(.x))) %>%
-  ungroup()
-
+# modeling
 mod_qol_full <- brm_multiple(
   bf(
     mvbind(
@@ -1348,13 +1387,23 @@ mod_qol_full <- brm_multiple(
       sf12_phys, smwt_dist, stst_nr,
       sgrq_tot_score
     )
-    ~ site + mfu_lead + death_lead + nf_ae + ment_trt_yn +
+    ~ site + nf_ae + ment_trt_yn +
       age_bin * time + sex * time +
       hiv * time + mdr * time + tbd_pat_cat * time +
       alc_bin * time + tobacco_bin * time
   )
   + set_rescor(rescor = FALSE),
-  data = qol_full_imp %>% split(.$.imp),
+  data = qol_fu_imp_prep %>%
+    filter(!wfu) %>%
+    group_by(record_id) %>%
+    arrange(time) %>%
+    mutate(
+      death_cum = cumsum(death),
+      mfu_cum = cumsum(mfu)
+    ) %>%
+    ungroup() %>%
+    filter(death_cum < 2, mfu_cum < 2) %>%
+    split(.$.imp),
   chains = 1,
   prior = c(
     set_prior("normal(0, 1)", class = "sigma", resp = names(outcome_cont2)),
@@ -1364,7 +1413,7 @@ mod_qol_full <- brm_multiple(
   cores = 4,
   seed = 12345,
   open_progress = FALSE,
-  file = "fitted-models/sensitivity-gaussian-regression-qol-time-fully-imputed"
+  file = "fitted-models/sensitivity-gaussian-regression-qol-time-with-mfu-death"
 )
 
 # posterior samples
@@ -1426,8 +1475,7 @@ save_plot(
 
 Interpretation:
 
-- Changes are similar with a stronger tendency for further improvements post treatment.
-- The latter can be expected because imputation of outcomes in missing follow-up patients is primarily based on the estimated effect in patients with follow-up, thus re-inforcing their estimated effect.
+- Changes are very similar.
 
 &nbsp;
 
@@ -1460,6 +1508,10 @@ time_full_smpls %>%
 
 ### Association with patient characteristics
 
+In above model, the estimated QoL changes were already adjusted for patients characteristics at baseline, received mental health treatment and non-fatal serious adverse events during treatment.
+Now we look into the association of QoL scores with patient characteristics.
+
+
 The following predictors were transformed:
 
 - Age: dichotomized into age < 30 and age >= 30.
@@ -1467,14 +1519,12 @@ The following predictors were transformed:
 
 We include time interaction effects for all predictors to estimate the association with baseline, end of treatment, and post treatment QoL. 
 
-The following variables are also included:
 
-- Subsequent MFU: To check whether missing follow-up is associated with QoL.
-- Subsequent death: To check whether subsequent death is associated with QoL.
-- Mental health treatment: To check whether received mental health treatment is associated with QoL.
-- Serious adverse events: To check whether experiencing any non-fatal serious adverse events is associated with QoL.
+We report primarily the probability that patient characteristics are associated with lower or higher QoL scores. 
+This probability is computed as the proportion of posterior draws from the model-estimated parameter that are smaller (lower QoL scores) or larger (higher QoL scores) than zero.
 
-**Figure 11**: Probability that patient characteristics are associated with lower or higher QoL scores. 
+
+**Figure 11**: Probability that patient characteristics are associated with lower (red) or higher (blue) QoL scores. 
 
 ```{r association-by-outcome, fig.height=12, fig.width=10}
 # associations of binary predictors
@@ -1578,17 +1628,16 @@ save_plot(
 
 Interpretation: 
 
-- The plot shows whether patient characteristics are associated with a higher (blue bar left of the middle dashed line) or lower in QoL (red bar right of the middle dashed line).
-- Bars left (20%) or right (80%) of the outer dashed lines can be considered significant associations, i.e. the odds for the association are larger than 80%/20% = 4.
+- The plot shows whether patient characteristics are associated with a higher (blue bar left of the middle dashed line) or lower (red bar right of the middle dashed line) QoL score.
+Bars left (20%) or right (80%) of the outer dashed lines show more significant associations, i.e. the odds for the association are greater than 80%/20% = 4.
 - Age<30 is typically associated with higher QoL scores. 
-- Female sex is typically associated with lower QoL scores.
-- Relapse TB-cases, drinking, and smoking are typically associated with lower QoL scores.
-- For HIV+ and MDR, the associations are more ambigious.
+- Female sex and relapse TB cases are typically associated with lower QoL scores.
+- For HIV+ and MDR, the associations vary more.
 - Since the plot shows only the direction of the association, we provide the full estimation results with the magnitude in the table below.
 
 &nbsp;
 
-**Table 13** Estimation results for the change in the QoL z-scores by predictor and time. Median and 95%-CrI and posterior probability that change dz is smaller or greater than zero.
+**Table 12**: Estimation results for the change in the QoL z-scores by predictor and time. Median and 95%-CrI of the association and posterior probability that change in QoL score "dz" is smaller or greater than zero.
 
 ```{r assoc-estimation-results}
 assoc_cont <- assoc_smpls %>%
@@ -1752,67 +1801,14 @@ assoc_smpls %>%
   knitr::kable(align = "lllrr")
 ```
 
-**Table 14**: Estimated association of subsequent death with QoL.
-
-```{r assoc-subsequent-death}
-mod_qol_smpls %>%
-  filter(grepl("death", variable)) %>%
-  mutate(
-    outcome = stringi::stri_extract(
-      variable,
-      regex = "[a-z,0-9]{2,}"
-    ),
-    outcome = recode(outcome, !!!outcome_cont2),
-    outcome = factor(outcome, levels = outcome_cont2)
-  ) %>%
-  group_by(outcome) %>%
-  summarize(
-    Median = median(value),
-    Lower = quantile(value, 0.025),
-    Upper = quantile(value, 0.975)
-  ) %>%
-  mutate_if(is.numeric, round, 2) %>%
-  rename(Outcome = outcome) %>%
-  knitr::kable(align = "lrrr")
-```
-
-Intepretation:
-
-- Subsequent death was associated with worse QoL outcomes.
-
 &nbsp;
 
-**Table 15**: Estimated association of subsequent missing follow-up with QoL.
+### Association with adverse events
 
-```{r assoc-subsequent-mfu}
-mod_qol_smpls %>%
-  filter(grepl("mfu", variable)) %>%
-  mutate(
-    outcome = stringi::stri_extract(
-      variable,
-      regex = "[a-z,0-9]{2,}"
-    ),
-    outcome = recode(outcome, !!!outcome_cont2),
-    outcome = factor(outcome, levels = outcome_cont2)
-  ) %>%
-  group_by(outcome) %>%
-  summarize(
-    Median = median(value),
-    Lower = quantile(value, 0.025),
-    Upper = quantile(value, 0.975)
-  ) %>%
-  mutate_if(is.numeric, round, 2) %>%
-  rename(Outcome = outcome) %>%
-  knitr::kable(align = "lrrr")
-```
+Based on the same model as before, we now look into the association of QoL scores with non-fatal serious adverse events during treatment and received mental health treatment.
 
-Intepretation:
 
-- Subsequent missing follow-up was *not* associated with QoL outcomes.
-
-&nbsp;
-
-**Table 16**: Estimated association of non-fatal adverse events with QoL.
+**Table 13**: Estimated association of non-fatal serious adverse events with QoL at baseline and end of treatment.
 
 ```{r assoc-adverse-events}
 mod_qol_smpls %>%
@@ -1842,7 +1838,7 @@ Intepretation:
 
 &nbsp;
 
-**Table 17**: Estimated association of meantal health treatment with QoL.
+**Table 14**: Estimated association of meantal health treatment with QoL.
 
 ```{r assoc-mental-health-treatment}
 mod_qol_smpls %>%
@@ -1871,13 +1867,123 @@ Intepretation:
 
 &nbsp;
 
+### Association with subsequent death or missing follow-up
+
+With the same model but only considering baseline and end of treatment visits, we now look into the association between QoL score and subsequent missing follow-up or death at the end of or post treatment.
+
+**Table 15**: Estimated association of subsequent death with QoL at baseline and end of treatment.
+
+```{r assoc-subsequent-death}
+# model
+mod_qol_mfu_lead <- brm_multiple(
+  bf(
+    mvbind(
+      phq9_score, sf12_ment,
+      sf12_phys, smwt_dist, stst_nr,
+      sgrq_tot_score
+    )
+    ~ site + nf_ae + ment_trt_yn +
+      mfu_lead + death_lead +
+      age_bin * time + sex * time +
+      hiv * time + mdr * time + tbd_pat_cat * time +
+      alc_bin * time + tobacco_bin * time
+  )
+  + set_rescor(rescor = FALSE),
+  data = qol_fu_imp_prep %>%
+    group_by(.imp, record_id) %>%
+    arrange(time) %>%
+    mutate(
+      mfu_lead = lead(mfu),
+      death_lead = lead(death)
+    ) %>%
+    filter(!mfu & !death, !wfu, time != "Post") %>%
+    split(.$.imp),
+  chains = 4,
+  prior = c(
+    set_prior("normal(0, 1)", class = "sigma", resp = names(outcome_cont2)),
+    set_prior("student_t(3, 0, 2.5)", class = "b", resp = names(outcome_cont2))
+  ),
+  iter = 1000,
+  cores = 4,
+  seed = 12345,
+  open_progress = FALSE,
+  file = "fitted-models/gaussian-regression-qol-lead-mfu-death"
+)
+
+# posterior samples
+mod_qol_mfu_lead_smpls <- mod_qol_mfu_lead %>%
+  spread_draws(`b_.*`, regex = TRUE) %>%
+  melt(c(".chain", ".draw", ".iteration"))
+
+mod_qol_mfu_lead_smpls %>%
+  filter(grepl("death", variable)) %>%
+  mutate(
+    outcome = stringi::stri_extract(
+      variable,
+      regex = "[a-z,0-9]{2,}"
+    ),
+    outcome = recode(outcome, !!!outcome_cont2),
+    outcome = factor(outcome, levels = outcome_cont2)
+  ) %>%
+  group_by(outcome) %>%
+  summarize(
+    Median = median(value),
+    Lower = quantile(value, 0.025),
+    Upper = quantile(value, 0.975)
+  ) %>%
+  mutate_if(is.numeric, round, 2) %>%
+  rename(Outcome = outcome) %>%
+  knitr::kable(align = "lrrr")
+```
+
+Intepretation:
+
+- Subsequent death at the end of or post treatment was associated with worse QoL outcomes at baseline or end of treatment.
+
+&nbsp;
+
+**Table 16**: Estimated association of subsequent missing follow-up with QoL  at baseline and end of treatment.
+
+```{r assoc-subsequent-mfu}
+mod_qol_mfu_lead_smpls %>%
+  filter(grepl("mfu", variable)) %>%
+  mutate(
+    outcome = stringi::stri_extract(
+      variable,
+      regex = "[a-z,0-9]{2,}"
+    ),
+    outcome = recode(outcome, !!!outcome_cont2),
+    outcome = factor(outcome, levels = outcome_cont2)
+  ) %>%
+  group_by(outcome) %>%
+  summarize(
+    Median = median(value),
+    Lower = quantile(value, 0.025),
+    Upper = quantile(value, 0.975)
+  ) %>%
+  mutate_if(is.numeric, round, 2) %>%
+  rename(Outcome = outcome) %>%
+  knitr::kable(align = "lrrr")
+```
+
+Intepretation:
+
+- Subsequent missing follow-up at the end of or post treatment was *not* associated with QoL outcomes at baseline or end of treatment.
+
+&nbsp;
+
 ### QoL impairement over time
 
-**Figure 12**: Estimated proportion of patients with impaired QoL. Pr = Bayesian probability that the proportions are smaller at the end vs start of and end of vs post treatment.
+We now estimate and compare the proportion of patients with QoL impairment over time.
+Again, we exclude missing follow-up visits and missing visits because the patient died.
+
+
+**Figure 12**: Estimated proportion of patients with impaired QoL. Pr = Probability that the proportions are smaller at the end vs start of and end of vs post treatment.
 
 ```{r model-qol-impairment, results = 'hide'}
 # prepare data
-qol_imp_bin <- qol_fu_imp %>%
+qol_imp_bin <- qol_fu_imp_long %>%
+  filter(!mfu, !death, !wfu) %>%
   dplyr::select(
     .imp,
     record_id,
@@ -2083,7 +2189,7 @@ qol_imp_prop %>%
 
 &nbsp;
 
-**Figure 13**: Estimated proportion of patients with depression for different cutoff values. Pr = Bayesian probability that the proportions are smaller at the end of and post treatment vs the start and end of treatment, respectively.
+**Figure 13**: Estimated proportion of patients with depression for different cutoff values. Pr = Probability that the proportions are smaller at the end of and post treatment vs the start and end of treatment, respectively.
 
 ```{r sensitivity-phq9-cutoff, fig.height=4, fig.width=4}
 # Bayesian posterior probability
@@ -2210,7 +2316,7 @@ save_plot(
 Interpretation:
 
 - Naturally, there are fewer depressed patients because of the lower cutoff.
-- But relatively, the results are very similar (similar significant changes).
+- But otherwise, the changes over time are very similar.
 - No further analysis thus conducted.
 
 &nbsp;
@@ -2244,13 +2350,19 @@ We are primarily interested in patients whose QoL did not improve through anti-T
 To investigate, we estimate the association of patient characteristics with different quantiles 
 of the QoL score distribution at the end of anti-TB treatment using quantile regression.
 We adjust for the baseline QoL score, non-fatal serious adverse events and mental health treatment.
+Again, we exclude missing follow-up visits and missing visits because the patient died.
 
 
-**Figure 14**: Estimated change in QoL z-score (median as dot, 95%-CrI as lines) per quantile at the end of anti-TB treatment by patient characteristic.
+**Figure 14**: Estimated change in QoL z-score (median as dot, 95%-CrI as lines) per quantile of the QoL score distribution at the end of anti-TB treatment by patient characteristic.
 
 ```{r quantile-regression, fig.width=7.9, fig.height=7.9}
 qol_fu_change <- qol_fu_imp_prep %>%
-  filter(time != "Post") %>%
+  filter(
+    !mfu,
+    !death,
+    !wfu,
+    time != "Post"
+  ) %>%
   group_by(.imp, record_id) %>%
   filter(n() == 2) %>%
   ungroup()
@@ -2395,8 +2507,11 @@ save_plot(
 Interpretation:
 
 - We focus on associations that vary between quantiles.
-- Low PHQ9-S (Q10 and Q25) at treatment end is associated with female sex, HIV+, and relapse TB cases.
-- Low mental health scores and SGRQ-TS are associated with relapse TB cases.
+- PHQ9-S of patients with low scores (Q10 and Q25) at treatment end was negatively associated with HIV+ and relapse TB cases.
+- PHQ9-S of patients with low scores was positively associated with MDR.
+- Patients with low scores were usually negatively associated with female sex and relapse TB cases.
+- Physical health of patients with low scores was positively associated with age<30.
+- SF12-PCS and SGRQ-TS of patients with low scores was positively associated with HIV+.
 
 &nbsp;
 
