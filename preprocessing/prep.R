@@ -20,6 +20,8 @@ df_prep <- df %>%
     age, # demographics
     dem_sex, # female is 2
     hiv_test_result, # 1 is positive
+    tbd_diagnosis,
+    hiv_viral_load, hiv_viral_load_nr, hiv_cd4_mm3_nr, # cd4 and viral load
     ic1, ic2, ic3, ic4, ic5, ic6, ic7, # inclusion criteria
     incl_substudy_yn,
     mb_xpert_t1_rifresist, mb_drug_rif, # drug resistance
@@ -230,12 +232,24 @@ df_prep <- df %>%
     bmi18 = ifelse(bmi < 18, 1, 0),
     tb_symp_score = ce_cough_blood_yn + ce_cough_yn +
       ce_chestpain_yn + ce_dyspnea_yn + high_temp +
-      tachycardia + auscultation + bmi16 + bmi18
+      tachycardia + auscultation + bmi16 + bmi18,
+    tbd_diagnosis = factor(
+      ifelse(
+        is.na(tbd_diagnosis), "Unknown",
+        ifelse(tbd_diagnosis == 1, "Pulmonary", "Pulmonary and extrapulmonary")
+      ),
+      levels = c("Pulmonary", "Pulmonary and extrapulmonary", "Unknown")
+    ),
+    obesity = factor(
+      ifelse(bmi > 30, "Overweight", ifelse(bmi < 18, "Underweight", "Normal")),
+      levels = c("Normal", "Underweight", "Overweight")
+    )
   ) %>%
   dplyr::select(
     record_id, time, date_visit, site,
     incl_substudy_yn,
-    age, sex, bmi,
+    age, sex, bmi, obesity,
+    tbd_diagnosis, hiv_viral_load, hiv_viral_load_nr, hiv_cd4_mm3_nr,
     hiv, mdr, highbact, cavity, clindiag, opacity, tbd_pat_cat,
     as_alc_calc, as_tobacco_calc,
     sf12_phys, sf12_ment, smwt_dist, stst_nr, phq9_score,

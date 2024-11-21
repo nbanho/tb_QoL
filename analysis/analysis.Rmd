@@ -253,6 +253,123 @@ qol_start %>%
   knitr::kable(align = "lr")
 ```
 
+&nbsp;
+
+```{r baseline}
+base_df <- qol_start %>%
+  mutate(
+    smoking = ifelse(as_tobacco_calc > 0, 1, 0),
+    drinking = ifelse(as_alc_calc > 0, 1, 0),
+    across(c(mdr, cavity, highbact, smoking, drinking, hiv_viral_load), ~
+      factor(
+        ifelse(.x == 0, "No", "Yes"),
+        levels = c("Yes", "No")
+      )),
+    tbd_pat_cat = factor(
+      ifelse(tbd_pat_cat == 1, "Relapse", "New case"),
+      levels = c("Relapse", "New case")
+    ),
+    hiv = factor(
+      ifelse(hiv == 1, "Positive", "Negative"),
+      levels = c("Positive", "Negative")
+    ),
+    sex = factor(ifelse(sex == 1, "Female", "Male"), levels = c("Female", "Male"))
+  ) %>%
+  dplyr::select(
+    site,
+    age,
+    sex,
+    tbd_pat_cat,
+    tbd_diagnosis,
+    mdr,
+    hiv,
+    hiv_cd4_mm3_nr,
+    hiv_viral_load,
+    hiv_viral_load_nr,
+    cavity,
+    highbact,
+    obesity,
+    smoking,
+    drinking
+  )
+
+var_names <- c(
+  "age" = "Age",
+  "sex" = "Sex",
+  "tbd_pat_cat" = "Type of case",
+  "tbd_diagnosis" = "TB manifestation",
+  "mdr" = "Multi-drugresistance",
+  "hiv" = "HIV status",
+  "hiv_cd4_mm3_nr" = "CD4 cell count",
+  "hiv_viral_load" = "Detectable HIV viral load",
+  "hiv_viral_load_nr" = "HIV viral load",
+  "highbact" = "High bacterial load",
+  "cavity" = "Cavitation",
+  "obesity" = "BMI",
+  "smoking" = "Smoking",
+  "drinking" = "Drinking"
+)
+
+base_tbl <- list()
+for (v in colnames(base_df)[-1]) {
+  if (is.numeric(base_df[[v]])) {
+    cty <- var_names[v]
+  } else {
+    cty <- levels(base_df[[v]])
+  }
+  values <- matrix(
+    NA,
+    nrow = length(cty),
+    ncol = 3 + n_distinct(base_df$site),
+    dimnames = list(
+      cty,
+      c("Variable", "Category", "All", levels(base_df$site))
+    )
+  )
+  values[, 1] <- v
+  values[, 2] <- cty
+  for (s in c("All", levels(base_df$site))) {
+    if (s == "All") {
+      sub <- levels(base_df$site)
+    } else {
+      sub <- s
+    }
+    if (cty[1] == var_names[v]) {
+      values[cty, s] <- paste0(
+        round(median(base_df[[v]][base_df$site %in% sub], na.rm = TRUE)),
+        " (IQR ",
+        round(quantile(base_df[[v]][base_df$site %in% sub], .25, na.rm = TRUE)),
+        " - ",
+        round(quantile(base_df[[v]][base_df$site %in% sub], .75, na.rm = TRUE)),
+        ")"
+      )
+    } else {
+      n_c <- table(base_df[[v]][base_df$site %in% sub])
+      N_c <- sum(n_c)
+      for (c in cty) {
+        values[c, s] <- paste0(
+          n_c[c],
+          "/",
+          N_c,
+          " (",
+          round(n_c[c] / N_c * 100, 0),
+          "%)"
+        )
+      }
+    }
+  }
+  base_tbl[[v]] <- values
+}
+
+do.call(rbind, base_tbl) %>%
+  as.data.frame() %>%
+  `rownames<-`(NULL) %>%
+  mutate(
+    Variable = recode(Variable, !!!var_names)
+  ) %>%
+  knitr::kable(align = "llrrrrr")
+```
+
 **Table 4**: Distribution of patient characteristics by time of patients with visits.
 
 ```{r}
