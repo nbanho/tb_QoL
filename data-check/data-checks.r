@@ -12,6 +12,75 @@ df <- read.csv(file_name)
 # prep data
 df_clean <- readRDS("data-clean/phys-ment-data.rds")
 
+#### Viral load ####
+
+# missing HIV status
+missing_hiv_records_1 <- df %>%
+  mutate(hiv_test_result = ifelse(
+    hiv_test_result == 99, NA, hiv_test_result
+  )) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  group_by(record_id) %>%
+  filter(all(is.na(hiv_test_result))) %>%
+  ungroup() %>%
+  pull(record_id) %>%
+  unique()
+missing_hiv_records_2 <- df %>%
+  mutate(hiv_test_result = ifelse(
+    hiv_test_result == 99, NA, hiv_test_result
+  )) %>%
+  filter(redcap_event_name == "baseline_arm_2") %>%
+  group_by(record_id) %>%
+  filter(all(is.na(hiv_test_result))) %>%
+  ungroup() %>%
+  pull(record_id) %>%
+  unique()
+missing_hiv_records <- c(
+  setdiff(missing_hiv_records_1, missing_hiv_records_2),
+  setdiff(missing_hiv_records_2, missing_hiv_records_1)
+)
+
+missing_hiv <- df %>%
+  filter(record_id %in% missing_hiv_records) %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    redcap_data_access_group,
+    starts_with("hiv")
+  ) %>%
+  arrange(
+    redcap_data_access_group,
+    record_id,
+    redcap_event_name
+  )
+
+write.csv(
+  missing_hiv,
+  file = "data-check/missing-hiv-status.csv",
+  row.names = FALSE
+)
+
+# viral load long list
+vldat <- df %>%
+  filter(hiv_test_result == 1) %>%
+  dplyr::select(
+    record_id,
+    redcap_event_name,
+    redcap_data_access_group,
+    starts_with("hiv")
+  ) %>%
+  arrange(
+    redcap_data_access_group,
+    record_id,
+    redcap_event_name
+  )
+
+write.csv(
+  vldat,
+  file = "data-check/hiv-positive-patients.csv",
+  row.names = FALSE
+)
+
 #### Tiana ####
 df %>%
   filter(record_id %in% c(

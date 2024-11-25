@@ -273,7 +273,10 @@ base_df <- qol_start %>%
       ifelse(hiv == 1, "Positive", "Negative"),
       levels = c("Positive", "Negative")
     ),
-    sex = factor(ifelse(sex == 1, "Female", "Male"), levels = c("Female", "Male"))
+    sex = factor(
+      ifelse(sex == 1, "Female", "Male"),
+      levels = c("Female", "Male")
+    )
   ) %>%
   dplyr::select(
     site,

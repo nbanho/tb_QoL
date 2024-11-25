@@ -24,6 +24,7 @@ df_prep <- df %>%
     hiv_viral_load, hiv_viral_load_nr, hiv_cd4_mm3_nr, # cd4 and viral load
     ic1, ic2, ic3, ic4, ic5, ic6, ic7, # inclusion criteria
     incl_substudy_yn,
+    mb_xpert_t1_result_cat, # xpert test result category for highbact
     mb_xpert_t1_rifresist, mb_drug_rif, # drug resistance
     tbd_pat_cat, # relapse or new tb case
     starts_with("sf_"), # SF12 quesstionnaire
@@ -90,13 +91,20 @@ df_prep <- df %>%
     site = tools::toTitleCase(site),
     site = ifelse(site == "Mosambiqu", "Mosambique", site),
     site = ifelse(site == "Southafrica", "South Africa", site),
-    site = factor(site, levels = c("South Africa", "Malawi", "Mosambique", "Zambia", "Zimbabwe")),
+    site = factor(
+      site,
+      levels = c("South Africa", "Malawi", "Mosambique", "Zambia", "Zimbabwe")
+    ),
     age = ifelse(age > 120, NA, age), # remove outliers
     sex = ifelse(sex == 1, 0, 1), # now: female is 1
     hiv = ifelse(hiv == 99, NA, ifelse(hiv == 1, 1, 0)),
     mdr = ifelse(mb_xpert_t1_rifresist == 1, 1, ifelse(mb_drug_rif == 2, 1, 0)),
     mdr = ifelse(is.na(mdr), 0, mdr),
     highbact = ifelse(mb_smear1_result_who %in% c(3, 4), 1, 0),
+    highbact = ifelse(
+      mb_xpert_t1_result_cat %in% c(4, 5), 1,
+      ifelse(is.na(highbact), 0, highbact)
+    ),
     highbact = ifelse(is.na(highbact), 0, highbact),
     cavity = ifelse(xr_cavitation_yn == 1, 1, 0),
     cavity = ifelse(is.na(cavity), 0, cavity),
