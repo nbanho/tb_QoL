@@ -38,7 +38,7 @@ qol <- readRDS("data-clean/phys-ment-data.rds") %>%
   arrange(time, record_id) %>%
   # cutoffs
   mutate(
-    phq9_score_bin = ifelse(phq9_score > 10, 1, 0),
+    phq9_score_bin = ifelse(phq9_score >= 7, 1, 0),
     sf12_phys_bin = ifelse(sf12_phys < 50, 1, 0),
     sf12_ment_bin = ifelse(sf12_ment < 42, 1, 0),
     smwt_dist_bin = ifelse(smwt_dist < 400, 1, 0),
@@ -53,23 +53,23 @@ qol_post <- filter(qol, time == "Post")
 
 # labeling
 outcome_cont <- c(
-  "phq9_score" = "PHQ9-S",
+  "phq9_score" = "PHQ-9",
   "sf12_ment" = "SF12-MCS",
   "sf12_phys" = "SF12-PCS",
-  "smwt_dist" = "6MWT-D",
-  "stst_nr" = "STST-R",
-  "sgrq_tot_score" = "SGRQ-TS"
+  "smwt_dist" = "6MWT",
+  "stst_nr" = "STST",
+  "sgrq_tot_score" = "SGRQ"
 )
 outcome_cont2 <- outcome_cont
 names(outcome_cont2) <- gsub("_", "", names(outcome_cont))
 
 outcome_bin <- c(
-  "phq9_score_bin" = "PHQ9-S>10",
+  "phq9_score_bin" = "PHQ-9\u22657",
   "sf12_ment_bin" = "SF12-MCS<42",
   "sf12_phys_bin" = "SF12-PCS<50",
-  "smwt_dist_bin" = "6MWT-D<400m",
-  "stst_nr_bin" = "STST-R<20",
-  "sgrq_tot_score_bin" = "SGRQ-TS>25"
+  "smwt_dist_bin" = "6MWT<400m",
+  "stst_nr_bin" = "STST<20",
+  "sgrq_tot_score_bin" = "SGRQ>25"
 )
 outcome_bin2 <- outcome_bin
 names(outcome_bin2) <- gsub("_", "", names(outcome_bin))
@@ -81,7 +81,7 @@ predictor <- c(
   "highbact" = "High bact. load",
   "mdr" = "MDR",
   "cavity" = "Cavitation",
-  "tbd_pat_cat" = "Relapse case",
+  "tbd_pat_cat" = "History of TB",
   "as_alc_calc" = "Alcohol score",
   "as_tobacco_calc" = "Tobacco score"
 )
@@ -92,7 +92,7 @@ predictor_bin <- c(
   "highbact" = "High bact. load",
   "mdr" = "MDR",
   "cavity" = "Cavitation",
-  "tbd_pat_cat" = "Relapse case",
+  "tbd_pat_cat" = "History of TB",
   "alc_bin" = "Drinking",
   "tobacco_bin" = "Smoking"
 )
@@ -117,7 +117,7 @@ The quality of life **(QoL)** outcomes:
 
 We define impaired QoL per outcome as:
 
-1. PHQ9-S > 10
+1. PHQ9-S ≥ 7
 2. SF12-MCS < 42
 3. SF12-PCS < 50
 4. 6MWT-D < 400m
@@ -270,8 +270,8 @@ base_df <- qol_start %>%
       levels = c("Relapse", "New case")
     ),
     hiv = factor(
-      ifelse(hiv == 1, "Positive", "Negative"),
-      levels = c("Positive", "Negative")
+      ifelse(is.na(hiv), "Unknown", ifelse(hiv == 1, "Positive", "Negative")),
+      levels = c("Positive", "Negative", "Unknown")
     ),
     sex = factor(
       ifelse(sex == 1, "Female", "Male"),
@@ -279,6 +279,7 @@ base_df <- qol_start %>%
     )
   ) %>%
   dplyr::select(
+    record_id,
     site,
     age,
     sex,
@@ -294,7 +295,21 @@ base_df <- qol_start %>%
     obesity,
     smoking,
     drinking
-  )
+  ) %>%
+  left_join(
+    qol %>%
+      filter(time %in% c("End", "Post")) %>%
+      group_by(site, record_id) %>%
+      summarise(ment = ifelse(
+        all(is.na(ment_trt_yn)), "Unknown", ifelse(
+          any(ment_trt_yn == 1, na.rm = TRUE), "Yes", "No"
+        )
+      )) %>%
+      ungroup() %>%
+      mutate(ment = factor(ment, levels = c("Yes", "No", "Unknown"))),
+    by = c("site", "record_id")
+  ) %>%
+  dplyr::select(-record_id)
 
 var_names <- c(
   "age" = "Age",
@@ -310,7 +325,8 @@ var_names <- c(
   "cavity" = "Cavitation",
   "obesity" = "BMI",
   "smoking" = "Smoking",
-  "drinking" = "Drinking"
+  "drinking" = "Drinking",
+  "ment" = "Mental treatment"
 )
 
 base_tbl <- list()
@@ -592,13 +608,14 @@ qol_boxplot <- qol %>%
   ggplot(aes(y = value, x = time, fill = time)) +
   facet_wrap(~outcome, scales = "free_y", ncol = 3) +
   geom_boxplot() +
-  labs(y = "Score value") +
+  labs(y = "Score value", x = "Treatment") +
   scale_fill_brewer(palette = "Set2") +
   theme_custom() +
   theme(
     legend.position = "top",
     legend.direction = "horizontal",
-    legend.title = element_blank()
+    legend.title = element_blank(),
+    axis.title.x = element_blank()
   )
 
 save_plot(
@@ -621,13 +638,12 @@ qol_denesity <- qol %>%
   ggh4x::facet_grid2(outcome ~ time, scales = "free", independent = "x") +
   geom_histogram(aes(y = ..density..)) +
   coord_cartesian(expand = FALSE) +
-  labs(y = "Density") +
+  labs(y = "Density", x = "Number of patients") +
   theme_custom() +
   theme(
     legend.position = "top",
     legend.direction = "horizontal",
-    legend.title = element_blank(),
-    axis.title.x = element_blank()
+    legend.title = element_blank()
   )
 
 save_plot(
@@ -697,26 +713,36 @@ cor_p_post <- qol %>%
 # Melt the correlation matrix into a long format
 cor_melt <- rbind(
   melt(cor) %>% mutate(time = "Overall"),
-  melt(cor_start) %>% mutate(time = "Start"),
-  melt(cor_end) %>% mutate(time = "End"),
-  melt(cor_post) %>% mutate(time = "Post")
+  melt(cor_start) %>% mutate(time = "Start of treatment"),
+  melt(cor_end) %>% mutate(time = "End of treatment"),
+  melt(cor_post) %>% mutate(time = "Post treatment")
 ) %>%
   mutate(
     Var1 = recode(Var1, !!!outcome_cont),
     Var2 = recode(Var2, !!!outcome_cont),
-    time = factor(time, levels = c("Overall", "Start", "End", "Post"))
+    time = factor(time, levels = c(
+      "Overall",
+      "Start of treatment",
+      "End of treatment",
+      "Post treatment"
+    ))
   )
 
 cor_p_melt <- rbind(
   melt(cor_p) %>% mutate(time = "Overall"),
-  melt(cor_p_start) %>% mutate(time = "Start"),
-  melt(cor_p_end) %>% mutate(time = "End"),
-  melt(cor_p_post) %>% mutate(time = "Post")
+  melt(cor_p_start) %>% mutate(time = "Start of treatment"),
+  melt(cor_p_end) %>% mutate(time = "End of treatment"),
+  melt(cor_p_post) %>% mutate(time = "Post treatment")
 ) %>%
   mutate(
     Var1 = recode(Var1, !!!outcome_cont),
     Var2 = recode(Var2, !!!outcome_cont),
-    time = factor(time, levels = c("Overall", "Start", "End", "Post"))
+    time = factor(time, levels = c(
+      "Overall",
+      "Start of treatment",
+      "End of treatment",
+      "Post treatment"
+    ))
   )
 
 cor_rp_melt <- left_join(
@@ -811,7 +837,7 @@ cor_pl <- ggplot(data = cor_rp_melt, aes(x = Var1, y = Var2, fill = value)) +
 save_plot(
   cor_pl,
   pdf_file = "results/outcome-correlation.png",
-  w = 12, h = 12
+  w = 16, h = 16
 )
 ```
 
@@ -893,6 +919,7 @@ qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
   theme(
     legend.position = "top",
     axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank(),
     legend.title = element_blank(),
     legend.key.width = unit(.2, "cm"),
     legend.key.height = unit(.4, "cm")
@@ -904,24 +931,6 @@ save_plot(
   pdf_file = "results/impaired-qol.png",
   w = 16, h = 10
 )
-# save_plot(
-#   qol_bin_comp_pl +
-#     facet_wrap(~outcome, nrow = 1, labeller = labeller(
-#       outcome = c(
-#         "PHQ9-S>10" = "PHQ9-S\n>10",
-#         "SF12-MCS<42" = "SF12-MCS\n<42",
-#         "SF12-PCS<50" = "SF12-PCS\n<50",
-#         "6MWT-D<400m" = "6MWT-D\n<400m",
-#         "STST-R<20" = "STST-R\n<20",
-#         "SGRQ-TS>25" = "SGRG-TS\n>25"
-#       )
-#     )) +
-#     ggtitle("Figure: Proportion of patients with impaired QoL\nat the end of and six months post TB treatment.") +
-#     guides(fill = guide_legend(nrow = 2)) +
-#     theme(panel.spacing = unit(.1, "cm")),
-#   pdf_file = "doc/croi/figure-impaired-qol.png",
-#   w = 10.15, h = 10.15
-# )
 ```
 
 Here are the counts and proportions shown in the plot:
@@ -951,9 +960,9 @@ qol_bin_comp %>%
 
 #### Patient trajectories for depression
 
-**Figure 6**: Trajectories of patients who were depressed (defined as PHQ9-S > 10) once during the study.
+**Figure 6**: Trajectories of patients who were depressed (defined as PHQ9-S ≥ 7) once during the study.
 
-```{r depressed-flow, fig.width=6.3, fig.height=3.9}
+```{r depressed-flow, fig.width=8, fig.height=10}
 var_names_dprs <- c(
   "Y" = "Depressed",
   "N" = "Not depressed",
@@ -1020,20 +1029,24 @@ flow_dprs_pl <- links_dprs %>%
   geom_text(stat = "stratum", size = 8 / cm(1)) +
   scale_fill_manual(values = var_colors_dprs) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
-  scale_x_discrete(labels = c("Start", "End", "Post")) +
-  labs(x = "Treatment") +
+  scale_x_discrete(labels = c(
+    "Start of treatment",
+    "End of treatment",
+    "Post treatment"
+  )) +
+  labs(y = "Number of patients") +
   theme_custom() +
   theme(
     legend.title = element_blank(),
     legend.position = "top",
-    axis.title.y = element_blank()
+    axis.title.x = element_blank()
   ) +
-  guides(fill = guide_legend(nrow = 1))
+  guides(fill = guide_legend(nrow = 2))
 
 save_plot(
   flow_dprs_pl,
   pdf_file = "results/sankey-depressed.png",
-  w = 16, h = 10
+  w = 16, h = 18
 )
 ```
 
@@ -1816,8 +1829,8 @@ assoc_smpls %>%
   ) %>%
   set_names(c(
     "Predictor",
-    "Prob. dz < 0",
-    "Prob. dz > 0"
+    "Prob. dz > 0",
+    "Prob. dz < 0"
   )) %>%
   knitr::kable(align = "lrr")
 ```
@@ -1852,8 +1865,8 @@ assoc_smpls %>%
   set_names(c(
     "Predictor",
     "Outcome category",
-    "Prob. dz < 0",
-    "Prob. dz > 0"
+    "Prob. dz > 0",
+    "Prob. dz < 0"
   )) %>%
   knitr::kable(align = "llrr")
 ```
@@ -1878,8 +1891,8 @@ assoc_smpls %>%
   set_names(c(
     "Predictor",
     "Time",
-    "Prob. dz < 0",
-    "Prob. dz > 0"
+    "Prob. dz > 0",
+    "Prob. dz < 0"
   )) %>%
   knitr::kable(align = "llrr")
 ```
@@ -1915,8 +1928,8 @@ assoc_smpls %>%
     "Predictor",
     "Outcome category",
     "Time",
-    "Prob. dz < 0",
-    "Prob. dz > 0"
+    "Prob. dz > 0",
+    "Prob. dz < 0"
   )) %>%
   knitr::kable(align = "lllrr")
 ```
@@ -2111,8 +2124,8 @@ qol_imp_bin <- qol_fu_imp_long %>%
     names(outcome_cont)
   ) %>%
   mutate(
-    phq9_score_bin = ifelse(phq9_score > 10, 1, 0),
-    phq9_score_bin_alt = ifelse(phq9_score > 7, 1, 0),
+    phq9_score_bin = ifelse(phq9_score >= 7, 1, 0),
+    phq9_score_bin_alt = ifelse(phq9_score >= 10, 1, 0),
     sgrq_tot_score_bin = ifelse(sgrq_tot_score > 25, 1, 0),
     smwt_dist_bin = ifelse(smwt_dist < 400, 1, 0),
     stst_nr_bin = ifelse(stst_nr < 20, 1, 0),
@@ -2185,7 +2198,7 @@ qol_bin_pp <- qol_bin_smpls %>%
   ) %>%
   mutate(
     value = scales::percent(value / 100, accuracy = 1),
-    value = ifelse(value == "100%", "Pr>99%", paste0("Pr" = value))
+    value = ifelse(value == "100%", "Pr>99%", paste0("Pr=", value))
   ) %>%
   rename(time = variable) %>%
   arrange(outcome, time) %>%
@@ -2279,7 +2292,7 @@ pl_comp <- qol_imp_prop %>%
 
 save_plot(
   pl_comp,
-  pdf_file = "results/qol-impairment-prevalence-by-time.pdf",
+  pdf_file = "results/qol-impairment-prevalence-by-time.png",
   w = 20, h = 10
 )
 ```
@@ -2321,8 +2334,8 @@ phq9_bin_pp <- qol_bin_smpls %>%
     Pr_post = 100 * mean(post_v_end < 0)
   ) %>%
   mutate(
-    outcome = ifelse(grepl("alt", outcome), "PHQ9-S>7", "PHQ9-10>10"),
-    outcome = factor(outcome, levels = c("PHQ9-S>7", "PHQ9>10"))
+    outcome = ifelse(grepl("alt", outcome), "PHQ-9\u226510", "PHQ-9\u22657"),
+    outcome = factor(outcome, levels = c("PHQ-9\u22657", "PHQ-9\u226510"))
   ) %>%
   melt("outcome") %>%
   mutate(
@@ -2334,7 +2347,7 @@ phq9_bin_pp <- qol_bin_smpls %>%
   ) %>%
   mutate(
     value = scales::percent(value / 100, accuracy = 1),
-    value = ifelse(value == "100%", "Pr>99%", paste0("Pr" = value))
+    value = ifelse(value == "100%", "Pr>99%", paste0("Pr=", value))
   ) %>%
   rename(time = variable) %>%
   arrange(outcome, time) %>%
@@ -2357,7 +2370,7 @@ phq9_imp_prop <- qol_imp_bin %>%
     p_s = sd(p)
   ) %>%
   mutate(
-    outcome = ifelse(grepl("alt", outcome), "PHQ9-S>7", "PHQ9>10")
+    outcome = ifelse(grepl("alt", outcome), "PHQ-9\u226510", "PHQ-9\u22657")
   ) %>%
   arrange(outcome, time)
 

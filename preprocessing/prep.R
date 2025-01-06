@@ -98,6 +98,9 @@ df_prep <- df %>%
     age = ifelse(age > 120, NA, age), # remove outliers
     sex = ifelse(sex == 1, 0, 1), # now: female is 1
     hiv = ifelse(hiv == 99, NA, ifelse(hiv == 1, 1, 0)),
+    hiv_cd4_mm3_nr = ifelse(hiv_cd4_mm3_nr > 1500, NA, hiv_cd4_mm3_nr),
+    hiv_viral_load = ifelse(hiv_viral_load_nr < 0, 0, hiv_viral_load),
+    hiv_viral_load_nr = ifelse(hiv_viral_load_nr == -1, NA, hiv_viral_load_nr),
     mdr = ifelse(mb_xpert_t1_rifresist == 1, 1, ifelse(mb_drug_rif == 2, 1, 0)),
     mdr = ifelse(is.na(mdr), 0, mdr),
     highbact = ifelse(mb_smear1_result_who %in% c(3, 4), 1, 0),
