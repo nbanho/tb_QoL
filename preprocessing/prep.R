@@ -17,6 +17,7 @@ df_prep <- df %>%
     redcap_event_name, # time of visit
     redcap_data_access_group, # site
     ce_completion_date, # date of visit
+    eot_visit_date, # end of treatment visit date
     age, # demographics
     dem_sex, # female is 2
     hiv_test_result, # 1 is positive
@@ -83,6 +84,11 @@ df_prep <- df %>%
   ungroup() %>%
   # generate variables
   mutate(
+    date_visit = if_else(
+      time == "End" & !is.na(eot_visit_date) & eot_visit_date > date_visit["Start"],
+      eot_visit_date,
+      date_visit
+    ),
     incl_substudy_yn = ifelse(is.na(incl_substudy_yn), 0, incl_substudy_yn),
     site = gsub("global_", "", site), # re-format site
     site = gsub("Global_", "", site),
@@ -623,6 +629,41 @@ df_full <- df_full %>%
     mfu = ifelse(is.na(mfu), FALSE, mfu),
     mfu = ifelse(ana & !wfu & !death, TRUE, mfu)
   )
+
+# in a few cases start and end or post and end date can be the same
+correct_dates <- function(df) {
+  df_corrected <- df %>%
+    dplyr::select(record_id, time, date_visit) %>%
+    pivot_wider(names_from = time, values_from = date_visit) %>%
+    mutate(
+      Start = if_else(
+        Start >= (End - days(30)),
+        End - months(6),
+        Start
+      ),
+      End = if_else(
+        End >= (Post - days(30)) & interval(Start, Post) > months(10),
+        Post - months(6),
+        End
+      ),
+      Post = if_else(
+        End >= (Post - days(30)) & interval(Start, Post) <= months(10),
+        Post + months(6),
+        Post
+      )
+    ) %>%
+    pivot_longer(
+      cols = c(Start, End, Post),
+      names_to = "time",
+      values_to = "date_visit"
+    ) %>%
+    arrange(record_id, time)
+  df %>%
+    dplyr::select(-date_visit) %>%
+    left_join(df_corrected, by = c("record_id", "time"))
+}
+
+df_full <- correct_dates(df_full)
 
 # save data
 saveRDS(df_full, "data-clean/phys-ment-data.rds")

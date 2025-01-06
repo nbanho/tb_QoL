@@ -190,6 +190,60 @@ Almost all TB treatment failures are death, therefore we do not model TB treatme
 
 ## Descriptives
 
+### Follow-up time
+
+```{r follow-up-time}
+tot_fup <- qol %>%
+  mutate(across(contains("date"), as.Date)) %>%
+  group_by(record_id) %>%
+  tidyr::fill(death_date, .direction = "downup") %>%
+  arrange(time) %>%
+  mutate(
+    date_visit = if_else(mfu, NA, date_visit),
+    visit = ifelse(
+      death, "Death",
+      ifelse(mfu, "MFU", "Visit")
+    )
+  ) %>%
+  ungroup() %>%
+  dplyr::select(record_id, time, date_visit, death_date, visit) %>%
+  pivot_wider(values_from = c(date_visit, visit), names_from = time) %>%
+  mutate(
+    study_end = as.Date("2024-09-30"),
+    next_visit = pmax(date_visit_Start, date_visit_End, na.rm = TRUE) + months(6),
+    expected_visit = next_visit > study_end,
+    first_visit = date_visit_Start,
+    last_visit = pmax(date_visit_End, date_visit_Post, na.rm = TRUE),
+    last_visit = if_else(is.na(last_visit) & visit_End == "MFU", date_visit_Start, last_visit),
+    time1 = last_visit - first_visit,
+    time2 = study_end - first_visit,
+    time = if_else(expected_visit, time2, time1),
+    time = as.numeric(time)
+  )
+
+time_btw_visits <- tot_fup %>%
+  mutate(
+    time_end = date_visit_End - date_visit_Start,
+    time_post = date_visit_Post - date_visit_End,
+    across(starts_with("time_"), as.integer)
+  ) %>%
+  filter(!expected_visit)
+
+tot_fup <- tot_fup %>%
+  mutate(
+    time = ifelse(
+      !is.na(time), time,
+      median(time_btw_visits$time_end, na.rm = TRUE) * (visit_End == "Visit") +
+        median(time_btw_visits$time_post, na.rm = TRUE) * (visit_Post == "Visit")
+    )
+  )
+
+sprintf(
+  "Total follow-up time: %s person-days",
+  format(sum(tot_fup$time), big.mark = ",")
+)
+```
+
 ### Study population
 
 **Table 1**: Number and proportion of visits, missing visits, deceased patients, and pending visits over time.
