@@ -36,6 +36,7 @@ The  data is as of January 30, 2025.
 ```{r data, include=FALSE}
 # data of patients with at least one outcome
 qol <- readRDS("../tb_care/data-clean/clean-cohort-data.rds") %>%
+  filter(time %in% c("Start", "End", "Post")) %>%
   mutate(time = factor(time, levels = c("Start", "End", "Post"))) %>%
   arrange(time, record_id) %>%
   rename(
@@ -985,7 +986,7 @@ qol_bin_comp <- qol %>%
   ungroup()
 
 qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
-  facet_wrap(~outcome, nrow = 1) +
+  facet_wrap(~outcome, nrow = 2) +
   geom_bar(
     aes(fill = variable),
     stat = "identity",
@@ -994,7 +995,7 @@ qol_bin_comp_pl <- ggplot(data = qol_bin_comp, mapping = aes(x = time, y = p)) +
   geom_text(
     data = filter(qol_bin_comp, variable == "Yes (impaired QoL)"),
     mapping = aes(group = time, label = paste0(round(p))),
-    vjust = -.5, size = 6 / cm(1),
+    vjust = -.5, size = 10 / cm(1),
     color = var_colors[1],
     show.legend = FALSE
   ) +
@@ -1023,6 +1024,12 @@ save_plot(
   qol_bin_comp_pl,
   pdf_file = "results/impaired-qol.png",
   w = 18, h = 10
+)
+
+save_plot(
+  qol_bin_comp_pl,
+  pdf_file = "results/impaired-qol-2row.png",
+  w = 18, h = 24
 )
 ```
 
